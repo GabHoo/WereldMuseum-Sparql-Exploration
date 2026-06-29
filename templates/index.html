@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MuseumHackaton SPARQL Demo</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 24px;
+        max-width: 900px;
+      }
+      button {
+        padding: 10px 16px;
+        margin-right: 10px;
+        margin-bottom: 12px;
+        font-size: 16px;
+      }
+      #result {
+        margin-top: 20px;
+      }
+      .result-grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .result-card {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .thumb {
+        width: 150px;
+        height: auto;
+        border-radius: 6px;
+        display: block;
+        margin-bottom: 8px;
+      }
+      .title {
+        font-weight: 600;
+        line-height: 1.3;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      .action-btn {
+        padding: 6px 10px;
+        font-size: 14px;
+        margin: 0;
+        border: 1px solid #ccc;
+        background: white;
+        cursor: pointer;
+      }
+      .action-btn.active {
+        background: #1f6feb;
+        color: white;
+        border-color: #1f6feb;
+      }
+      .submit-row {
+        margin-top: 20px;
+      }
+      .error {
+        color: #c00;
+      }
+      .loading {
+        color: #555;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>MuseumHackaton Collection Explorer</h1>
+    <p>Select an object category to explore the Wereld Museum collection:</p>
+    
+    <div id="buttons"></div>
+
+    <div id="result"></div>
+
+    <script>
+      const resultEl = document.getElementById("result");
+      const buttonsEl = document.getElementById("buttons");
+      let currentEntityName = "";
+      let currentDisplayedItems = [];
+      let currentChoices = {};
+      let seenItemIds = new Set();
+
+      function getItemId(item, index) {
+        return item.artifact || item.artifacttitle || item.url_photo || item.title || item.itemLabel || `item-${index}`;
+      }
+
+      function renderCards(items, titleText) {
+        const cardsHtml = [
+          `<p>${titleText}</p>`,
+          '<div class="result-grid">',
+          ...items.map((item, index) => {
+            const itemId = getItemId(item, index);
+            const title = item.artifacttitle || item.title || item.itemLabel || "Untitled";
+            const photoUrl = item.url_photo || "";
+            const safeTitle = title.replace(/"/g, "&quot;");
+            const imageHtml = photoUrl && photoUrl.trim()
+              ? `<img src="${photoUrl}" width="150" />`
+              : "";
+            const choice = currentChoices[itemId];
+            const yesActive = choice === "yes" ? "active" : "";
+            const noActive = choice === "no" ? "active" : "";
+
+            return `
+              <div class="result-card" data-item-id="${itemId}">
+                <div>${imageHtml || '<div class="thumb empty">No image available</div>'}</div>
+                <div class="title">${safeTitle}</div>
+                <div class="actions">
+                  <button class="action-btn ${yesActive}" type="button" data-choice="yes">Yes</button>
+                  <button class="action-btn ${noActive}" type="button" data-choice="no">No</button>
+                </div>
+              </div>`;
+          }),
+          '</div>'
+        ].join("");
+
+        return cardsHtml;
+      }
+
+      function renderActionBar() {
+        return `
+          <div class="submit-row">
+            <button id="submitBtn" type="button">Submit</button>
+            <button id="extractBtn" type="button" disabled>Extract</button>
+          </div>
+        `;
+      }
+
+      function updateExtractState() {
+        const extractBtn = document.getElementById("extractBtn");
+        if (!extractBtn) return;
+        const yesCount = Object.values(currentChoices).filter((choice) => choice === "yes").length;
+        extractBtn.disabled = yesCount < 5;
+      }
+
+      function bindCardButtons() {
+        resultEl.querySelectorAll('.action-btn').forEach((button) => {
+          button.addEventListener('click', () => {
+            const card = button.closest('.result-card');
+            const itemId = card.getAttribute('data-item-id');
+            const choice = button.getAttribute('data-choice');
+            currentChoices[itemId] = choice;
+
+            const buttons = card.querySelectorAll('.action-btn');
+            buttons.forEach((b) => b.classList.remove('active'));
+            button.classList.add('active');
+            updateExtractState();
+          });
+        });
+      }
+
+      function renderResults(entityName, items) {
+        currentDisplayedItems = items;
+        resultEl.innerHTML = renderCards(items, `<strong>${entityName}</strong>`) + renderActionBar();
+        bindCardButtons();
+        updateExtractState();
+      }
+
+      function attachSubmitHandler() {
+        const submitBtn = document.getElementById("submitBtn");
+        if (!submitBtn) return;
+        submitBtn.onclick = async () => {
+          const noItemIds = currentDisplayedItems
+            .map((item, index) => ({ item, itemId: getItemId(item, index) }))
+            .filter(({ itemId }) => currentChoices[itemId] === "no")
+            .map(({ itemId }) => itemId);
+
+          if (noItemIds.length === 0) {
+            updateExtractState();
+            return;
+          }
+
+          resultEl.innerHTML = '<p class="loading">Loading next set...</p>';
+
+          try {
+            const response = await fetch("/query", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ entity: currentEntityName }),
+            });
+
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data.error || "Query failed");
+            }
+
+            const availableItems = (data.items || []).filter((item, index) => {
+              const itemId = getItemId(item, index);
+              return !seenItemIds.has(itemId);
+            });
+            const shuffled = [...availableItems].sort(() => Math.random() - 0.5);
+            const replacements = shuffled.slice(0, noItemIds.length);
+            const nextItems = [];
+            const nextChoices = {};
+
+            currentDisplayedItems.forEach((item, index) => {
+              const itemId = getItemId(item, index);
+              const choice = currentChoices[itemId];
+              if (choice === "yes") {
+                nextItems.push(item);
+                nextChoices[itemId] = "yes";
+              } else if (choice === "no") {
+                const replacement = replacements.shift();
+                if (replacement) {
+                  const replacementId = getItemId(replacement, nextItems.length);
+                  nextItems.push(replacement);
+                  seenItemIds.add(replacementId);
+                }
+              } else {
+                nextItems.push(item);
+              }
+            });
+
+            currentChoices = nextChoices;
+            renderResults(currentEntityName, nextItems);
+          } catch (error) {
+            resultEl.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+          }
+        };
+      }
+
+      function attachExtractHandler() {
+        const extractBtn = document.getElementById("extractBtn");
+        if (!extractBtn) return;
+        extractBtn.onclick = () => {
+          const selections = currentDisplayedItems.filter((item, index) => {
+            const itemId = getItemId(item, index);
+            return currentChoices[itemId] === "yes";
+          });
+
+          if (selections.length < 5) {
+            alert("You need 5 selections before extracting.");
+            return;
+          }
+
+          fetch('/save_selections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selections })
+          }).then(r => r.json()).then(resp => {
+            extractBtn.disabled = true;
+            extractBtn.textContent = 'Exported';
+            resultEl.innerHTML = `<p>Saved ${selections.length} selections to ${resp.path}</p>`;
+          }).catch(err => {
+            resultEl.innerHTML = `<p class="error">Failed to save selections: ${err}</p>`;
+          });
+        };
+      }
+
+      // Fetch entities from server and render buttons
+      fetch("/entities")
+        .then(response => response.json())
+        .then(data => {
+          const entities = data.entities;
+          Object.entries(entities).forEach(([label]) => {
+            const btn = document.createElement("button");
+            btn.textContent = label;
+            btn.addEventListener("click", () => runQuery(label));
+            buttonsEl.appendChild(btn);
+          });
+        });
+
+      async function runQuery(entityName) {
+        currentEntityName = entityName;
+        resultEl.innerHTML = '<p class="loading">Loading results for ' + entityName + '...</p>';
+
+        try {
+          const response = await fetch("/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ entity: entityName }),
+          });
+
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Query failed");
+          }
+
+          if (!data.items || data.items.length === 0) {
+            resultEl.innerHTML = '<p>No results returned.</p>';
+            return;
+          }
+
+          const shuffled = [...data.items].sort(() => Math.random() - 0.5).slice(0, 5);
+          currentChoices = {};
+          shuffled.forEach((item, index) => {
+            const itemId = getItemId(item, index);
+            seenItemIds.add(itemId);
+          });
+          renderResults(entityName, shuffled);
+          attachSubmitHandler();
+          attachExtractHandler();
+        } catch (error) {
+          resultEl.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+        }
+      }
+    </script>
+  </body>
+</html>
