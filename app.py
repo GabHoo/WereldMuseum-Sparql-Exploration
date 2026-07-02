@@ -74,10 +74,8 @@ def _normalize_pool(raw_rows: list) -> list:
     Convert raw SPARQL result rows into the internal pool item schema:
         { id, title, score, properties }
 
-    Dedup key is (artifact_id, photo_url):
-      - same artifact + same photo → one card (collapses duplicate type rows)
-      - same artifact + different photo → separate cards (distinct visual entries)
-      - same artifact + no photo (or cleared placeholder) → one card
+    Dedup key is artifact_id: one card per artifact, first valid photo wins.
+    Artifacts with no photo or only placeholder photos are dropped entirely.
     """
     fm = config.FIELD_MAP
 
@@ -100,10 +98,9 @@ def _normalize_pool(raw_rows: list) -> list:
         photo = row.get("url_photo", "").strip()
         if not photo or _check_url(photo):
             continue
-        dedup_key = (item_id, photo)
-        if dedup_key in seen:
+        if item_id in seen:
             continue
-        seen.add(dedup_key)
+        seen.add(item_id)
         pool.append({
             "id":         item_id,
             "title":      row.get(fm["title"], "").strip() or "Untitled",
