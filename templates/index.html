@@ -178,8 +178,7 @@
 
     .artifact-card:hover { box-shadow: 0 0 0 1px var(--accent); }
 
-    .artifact-card.voted-yes { box-shadow: 0 0 0 2px #3d6b3d; }
-    .artifact-card.voted-no  { box-shadow: 0 0 0 2px #6b3030; }
+    .artifact-card.kept { box-shadow: 0 0 0 2px #3d6b3d; }
 
     .card-img {
       width: 100%;
@@ -225,37 +224,28 @@
 
     .card-id a:hover { color: var(--accent); text-decoration: underline; }
 
-    .card-votes {
-      display: flex;
-      gap: 4px;
-      margin-top: auto;
-    }
+    .card-actions { margin-top: auto; }
 
-    .vote-btn {
-      flex: 1;
+    .keep-btn {
+      width: 100%;
       border: 1px solid #c0b8a6;
       background: transparent;
       cursor: pointer;
       font-family: var(--mono);
       font-size: 0.65rem;
       letter-spacing: 0.06em;
-      padding: 5px 0;
+      padding: 6px 0;
       color: #4a4035;
       transition: background 0.1s, color 0.1s, border-color 0.1s;
     }
 
-    .vote-btn:hover:not(.active) { background: #c8c0b0; }
+    .keep-btn:hover:not(:disabled) { background: #c8c0b0; }
 
-    .vote-btn.yes.active {
+    .keep-btn:disabled {
       background: #2a4e2a;
       border-color: #2a4e2a;
       color: #b0f0b0;
-    }
-
-    .vote-btn.no.active {
-      background: #4e2a2a;
-      border-color: #4e2a2a;
-      color: #f0b0b0;
+      cursor: default;
     }
 
     /* ── Controls bar ───────────────────────────────────────────────────── */
@@ -333,11 +323,29 @@
     }
 
     .sel-card {
+      position: relative;
       width: 76px;
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       overflow: hidden;
     }
+
+    .sel-remove {
+      position: absolute;
+      top: 3px; right: 3px;
+      width: 16px; height: 16px;
+      background: rgba(0,0,0,0.45);
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      font-size: 0.7rem;
+      line-height: 1;
+      padding: 0;
+      cursor: pointer;
+      z-index: 1;
+      transition: background 0.1s;
+    }
+    .sel-remove:hover { background: rgba(160,30,30,0.85); }
 
     .sel-card img {
       width: 100%;
@@ -465,7 +473,8 @@
   let batchIdx = -1;
 
   function atFrontier() { return batches.length > 0 && batchIdx === batches.length - 1; }
-  function curBatch()   { return batches[batchIdx] || { displayed: [], choices: {} }; }
+  function curBatch()   { return batches[batchIdx] || { displayed: [] }; }
+  function isKept(id)   { return selected.some(s => s.id === id); }
 
   /* ── DOM ────────────────────────────────────────────────────────────── */
   const poolSection = document.getElementById('pool-section');
@@ -512,17 +521,12 @@
       nextBtn.disabled    = pool.length > 0 && unseen === 0;
       nextBtn.textContent = 'Next batch →';
     }
-    if (batches.length > 1 || !atFrontier()) {
-      const marker = atFrontier() ? '' : '  (browsing past)';
-      statusMsg.textContent = `Batch ${batchIdx + 1} / ${batches.length}${marker}`;
-    } else {
-      statusMsg.textContent = '';
-    }
+    statusMsg.textContent = !atFrontier() ? '(browsing past)' : '';
   }
 
   /* ── Render pool ────────────────────────────────────────────────────── */
   function renderPool() {
-    const { displayed, choices } = curBatch();
+    const { displayed } = curBatch();
 
     if (!displayed.length) {
       poolGrid.innerHTML = '<p style="color:var(--text-muted);font-size:.7rem;">Pool exhausted.</p>';
@@ -531,30 +535,31 @@
     }
 
     poolGrid.innerHTML = displayed.map(item => {
-      const choice = choices[item.id] || '';
-      const photo  = photoOf(item);
-      const img    = photo
+      const kept  = isKept(item.id);
+      const photo = photoOf(item);
+      const img   = photo
         ? `<img class="card-img" src="${esc(photo)}" alt="" loading="lazy">`
         : `<div class="card-no-img">no image</div>`;
       return `
-        <div class="artifact-card${choice ? ' voted-' + choice : ''}" data-id="${esc(item.id)}">
+        <div class="artifact-card${kept ? ' kept' : ''}" data-id="${esc(item.id)}">
           ${img}
           <div class="card-body">
             <div class="card-title">${esc(item.title)}</div>
             <div class="card-id"><a href="${esc(item.id)}" target="_blank" rel="noopener">${esc(shortId(item.id))}</a></div>
-            <div class="card-votes">
-              <button class="vote-btn yes${choice==='yes'?' active':''}" data-choice="yes">✓ Keep</button>
-              <button class="vote-btn no${choice==='no'?' active':''}"  data-choice="no">✗ Skip</button>
+            <div class="card-actions">
+              <button class="keep-btn"${kept ? ' disabled' : ''}>${kept ? '✓ Kept' : 'Keep'}</button>
             </div>
           </div>
         </div>`;
     }).join('');
 
     poolGrid.querySelectorAll('.artifact-card').forEach(card => {
-      const id = card.dataset.id;
-      card.querySelectorAll('.vote-btn').forEach(btn => {
-        btn.addEventListener('click', () => vote(id, btn.dataset.choice, card));
-      });
+      const id   = card.dataset.id;
+      const item = displayed.find(i => i.id === id);
+      const btn  = card.querySelector('.keep-btn');
+      if (btn && item && !isKept(id)) {
+        btn.addEventListener('click', () => keepItem(item, btn, card));
+      }
     });
 
     const unseenCount = pool.filter(i => !serverHistory.seen.includes(i.id)).length;
@@ -567,27 +572,56 @@
     selStat.textContent = `${selected.length} item${selected.length !== 1 ? 's' : ''}`;
     if (!selected.length) {
       selGrid.innerHTML = '<span class="empty-msg">No items selected yet.</span>';
-      exportBtn.disabled = true;
-      return;
+    } else {
+      selGrid.innerHTML = selected.map(item => {
+        const photo = photoOf(item);
+        const img   = photo
+          ? `<img src="${esc(photo)}" alt="" loading="lazy">`
+          : `<div class="sel-card-no-img"></div>`;
+        return `
+          <div class="sel-card">
+            <button class="sel-remove" data-id="${esc(item.id)}" title="Remove">×</button>
+            ${img}
+            <div class="sel-card-title">${esc(item.title)}</div>
+          </div>`;
+      }).join('');
+      selGrid.querySelectorAll('.sel-remove').forEach(btn => {
+        btn.addEventListener('click', () => removeItem(btn.dataset.id));
+      });
     }
-    selGrid.innerHTML = selected.map(item => {
-      const photo = photoOf(item);
-      const img   = photo
-        ? `<img src="${esc(photo)}" alt="" loading="lazy">`
-        : `<div class="sel-card-no-img"></div>`;
-      return `<div class="sel-card">${img}<div class="sel-card-title">${esc(item.title)}</div></div>`;
-    }).join('');
-    exportBtn.disabled = false;
+    exportBtn.disabled = selected.length === 0;
   }
 
-  /* ── Vote ───────────────────────────────────────────────────────────── */
-  function vote(id, choice, card) {
-    curBatch().choices[id] = choice;
-    card.classList.toggle('voted-yes', choice === 'yes');
-    card.classList.toggle('voted-no',  choice === 'no');
-    card.querySelectorAll('.vote-btn').forEach(b => {
-      b.classList.toggle('active', b.dataset.choice === choice);
-    });
+  /* ── Keep ───────────────────────────────────────────────────────────── */
+  function keepItem(item, btn, card) {
+    selected.push(item);
+    card.classList.add('kept');
+    btn.disabled    = true;
+    btn.textContent = '✓ Kept';
+    renderSelected();
+  }
+
+  /* ── Remove from selected ───────────────────────────────────────────── */
+  function removeItem(itemId) {
+    const idx = selected.findIndex(s => s.id === itemId);
+    if (idx === -1) return;
+    selected.splice(idx, 1);
+    const accIdx = serverHistory.accepted.indexOf(itemId);
+    if (accIdx !== -1) serverHistory.accepted.splice(accIdx, 1);
+    serverHistory.rejected.push(itemId);
+    // Restore card in pool if currently visible
+    const card = poolGrid.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
+    if (card) {
+      card.classList.remove('kept');
+      const btn  = card.querySelector('.keep-btn');
+      const item = curBatch().displayed.find(i => i.id === itemId);
+      if (btn && item) {
+        btn.disabled    = false;
+        btn.textContent = 'Keep';
+        btn.addEventListener('click', () => keepItem(item, btn, card));
+      }
+    }
+    renderSelected();
   }
 
   /* ── Search ─────────────────────────────────────────────────────────── */
@@ -642,7 +676,7 @@
       meta = { query: queries.join(' + '), sparql: firstSparql };
       serverHistory.seen = firstDisplayed.map(i => i.id);
 
-      batches  = [{ displayed: firstDisplayed, choices: {} }];
+      batches  = [{ displayed: firstDisplayed }];
       batchIdx = 0;
 
       poolSection.hidden = false;
@@ -670,16 +704,14 @@
       return;
     }
 
-    // At frontier: commit yes-votes to selected, then fetch a new batch
-    const { displayed, choices } = curBatch();
-    const yesItems = displayed.filter(i => choices[i.id] === 'yes');
-    selected.push(...yesItems);
-    serverHistory.accepted.push(...yesItems.map(i => i.id));
-    serverHistory.rejected.push(...displayed.filter(i => choices[i.id] === 'no').map(i => i.id));
+    // At frontier: items not kept → rejected; fetch new batch
+    const { displayed } = curBatch();
+    const keptIds = new Set(selected.map(i => i.id));
+    serverHistory.accepted.push(...displayed.filter(i =>  keptIds.has(i.id)).map(i => i.id));
+    serverHistory.rejected.push(...displayed.filter(i => !keptIds.has(i.id)).map(i => i.id));
 
     nextBtn.disabled = true;
     statusMsg.textContent = 'Loading…';
-    renderSelected();
 
     try {
       const r = await fetch('/next', {
@@ -690,10 +722,8 @@
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed');
 
-      const newDisplayed = d.displayed;
-      serverHistory.seen.push(...newDisplayed.map(i => i.id));
-
-      batches.push({ displayed: newDisplayed, choices: {} });
+      serverHistory.seen.push(...d.displayed.map(i => i.id));
+      batches.push({ displayed: d.displayed });
       batchIdx = batches.length - 1;
 
       renderPool();
