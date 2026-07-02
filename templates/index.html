@@ -1,305 +1,842 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MuseumHackaton SPARQL Demo</title>
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        margin: 24px;
-        max-width: 900px;
-      }
-      button {
-        padding: 10px 16px;
-        margin-right: 10px;
-        margin-bottom: 12px;
-        font-size: 16px;
-      }
-      #result {
-        margin-top: 20px;
-      }
-      .result-grid {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      }
-      .result-card {
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        padding: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      .thumb {
-        width: 150px;
-        height: auto;
-        border-radius: 6px;
-        display: block;
-        margin-bottom: 8px;
-      }
-      .title {
-        font-weight: 600;
-        line-height: 1.3;
-      }
-      .actions {
-        display: flex;
-        gap: 8px;
-      }
-      .action-btn {
-        padding: 6px 10px;
-        font-size: 14px;
-        margin: 0;
-        border: 1px solid #ccc;
-        background: white;
-        cursor: pointer;
-      }
-      .action-btn.active {
-        background: #1f6feb;
-        color: white;
-        border-color: #1f6feb;
-      }
-      .submit-row {
-        margin-top: 20px;
-      }
-      .error {
-        color: #c00;
-      }
-      .loading {
-        color: #555;
-      }
-    </style>
-  </head>
-  <body>
-    <h1>MuseumHackaton Collection Explorer</h1>
-    <p>Select an object category to explore the Wereld Museum collection:</p>
-    
-    <div id="buttons"></div>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Collection Curation — Wereld Museum</title>
+  <style>
+    :root {
+      --bg:           #f0ebe0;
+      --surface:      #e4ddd0;
+      --card-bg:      #faf7f2;
+      --card-border:  #b8a888;
+      --text-on-dark: #1a1510;
+      --text-muted:   #7a6e60;
+      --accent:       #7a5e20;
+      --accent-light: #a07828;
+      --selected-bg:  #ece5d0;
+      --selected-border: #b8a878;
+      --serif:        Georgia, 'Times New Roman', serif;
+      --mono:         'Courier New', Courier, monospace;
+    }
 
-    <div id="result"></div>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    <script>
-      const resultEl = document.getElementById("result");
-      const buttonsEl = document.getElementById("buttons");
-      let currentEntityName = "";
-      let currentDisplayedItems = [];
-      let currentChoices = {};
-      let seenItemIds = new Set();
+    body {
+      background: var(--bg);
+      color: var(--text-on-dark);
+      font-family: var(--mono);
+      font-size: 14px;
+      min-height: 100vh;
+    }
 
-      function getItemId(item, index) {
-        return item.artifact || item.artifacttitle || item.url_photo || item.title || item.itemLabel || `item-${index}`;
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      padding: 28px 36px 20px;
+      border-bottom: 1px solid #c8bfaf;
+      display: flex;
+      align-items: baseline;
+      gap: 24px;
+    }
+
+    header h1 {
+      font-family: var(--serif);
+      font-size: 1.5rem;
+      font-weight: normal;
+      letter-spacing: 0.04em;
+      color: #1a1510;
+    }
+
+    header span {
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    /* ── Query bar ──────────────────────────────────────────────────────── */
+    #query-bar {
+      padding: 16px 36px;
+      background: var(--surface);
+      border-bottom: 1px solid #c8bfaf;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    #query-bar label {
+      font-size: 0.62rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .cat-btn {
+      background: transparent;
+      border: 1px solid #b0a490;
+      color: var(--text-on-dark);
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 6px 14px;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+
+    .cat-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .cat-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    #keyword-wrap { display: flex; }
+
+    #keyword-input {
+      background: #fff;
+      border: 1px solid #b0a490;
+      border-right: none;
+      color: var(--text-on-dark);
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      padding: 6px 12px;
+      width: 320px;
+      outline: none;
+    }
+
+    #keyword-input::placeholder { color: var(--text-muted); }
+    #keyword-input:focus { border-color: var(--accent); }
+
+    .search-btn {
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      color: #fff;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 6px 16px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+
+    .search-btn:hover { background: var(--accent-light); }
+
+    /* ── Main layout ────────────────────────────────────────────────────── */
+    main { padding: 28px 36px 48px; }
+
+    /* ── Pool section ───────────────────────────────────────────────────── */
+    #pool-section {
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 40px;
+      padding: 18px 18px 0;
+      background: #e8e0ce;
+      border: 1px solid #c4b898;
+      /* faint vignette to suggest depth / dust */
+      box-shadow: inset 0 0 60px rgba(80, 60, 20, 0.07);
+    }
+
+    .section-meta {
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .section-label {
+      font-size: 0.6rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .section-stat {
+      font-size: 0.65rem;
+      color: var(--text-muted);
+    }
+
+    /* ── Card grid ──────────────────────────────────────────────────────── */
+    #pool-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(154px, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .artifact-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: box-shadow 0.15s;
+    }
+
+    .artifact-card:hover { box-shadow: 0 0 0 1px var(--accent); }
+
+    .artifact-card.voted-yes { box-shadow: 0 0 0 2px #3d6b3d; }
+    .artifact-card.voted-no  { box-shadow: 0 0 0 2px #6b3030; }
+
+    .card-img {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      display: block;
+      background: #d6cfbe;
+    }
+
+    .card-no-img {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      background: #d6cfbe;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.55rem;
+      letter-spacing: 0.1em;
+      color: #9a9080;
+    }
+
+    .card-body {
+      padding: 8px 8px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+    }
+
+    .card-title {
+      font-family: var(--serif);
+      font-size: 0.72rem;
+      color: #1a1510;
+      line-height: 1.35;
+    }
+
+    .card-id a {
+      font-size: 0.55rem;
+      color: #7a7060;
+      text-decoration: none;
+      word-break: break-all;
+    }
+
+    .card-id a:hover { color: var(--accent); text-decoration: underline; }
+
+    .card-votes {
+      display: flex;
+      gap: 4px;
+      margin-top: auto;
+    }
+
+    .vote-btn {
+      flex: 1;
+      border: 1px solid #c0b8a6;
+      background: transparent;
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.06em;
+      padding: 5px 0;
+      color: #4a4035;
+      transition: background 0.1s, color 0.1s, border-color 0.1s;
+    }
+
+    .vote-btn:hover:not(.active) { background: #c8c0b0; }
+
+    .vote-btn.yes.active {
+      background: #2a4e2a;
+      border-color: #2a4e2a;
+      color: #b0f0b0;
+    }
+
+    .vote-btn.no.active {
+      background: #4e2a2a;
+      border-color: #4e2a2a;
+      color: #f0b0b0;
+    }
+
+    /* ── Controls bar ───────────────────────────────────────────────────── */
+    #controls-bar {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 14px 0;
+      border-top: 1px solid #c8bfaf;
+    }
+
+    #next-btn, #prev-btn {
+      background: transparent;
+      border: 1px solid #b0a490;
+      color: var(--text-on-dark);
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 7px 20px;
+      cursor: pointer;
+      transition: border-color 0.12s, color 0.12s;
+    }
+
+    #next-btn:hover:not(:disabled),
+    #prev-btn:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    #next-btn:disabled,
+    #prev-btn:disabled { opacity: 0.28; cursor: default; }
+
+    #cat-search-btn {
+      margin-left: 8px;
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      color: #fff;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 6px 18px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    #cat-search-btn:hover:not(:disabled) { background: var(--accent-light); }
+    #cat-search-btn:disabled { opacity: 0.35; cursor: default; }
+
+    #status-msg {
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      letter-spacing: 0.06em;
+    }
+
+    /* ── Selected section ───────────────────────────────────────────────── */
+    #selected-section {
+      border: 1px solid var(--selected-border);
+      border-top: 2px solid var(--accent);
+      background: var(--selected-bg);
+      padding: 20px 20px 16px;
+    }
+
+    #selected-section .section-label { color: var(--accent); }
+    #selected-section .section-stat  { color: var(--text-muted); }
+
+    .empty-msg { color: #8a8070; }
+
+    #selected-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 70px;
+      padding: 12px 0 8px;
+    }
+
+    .sel-card {
+      width: 76px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      overflow: hidden;
+    }
+
+    .sel-card img {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      display: block;
+    }
+
+    .sel-card-no-img {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      background: #d6cfbe;
+    }
+
+    .sel-card-title {
+      padding: 4px 5px;
+      font-size: 0.52rem;
+      color: #1a1510;
+      line-height: 1.25;
+      font-family: var(--mono);
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .empty-msg {
+      font-size: 0.65rem;
+      color: #5a5448;
+      font-style: italic;
+      align-self: center;
+    }
+
+    #export-btn {
+      margin-top: 12px;
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      color: #fff;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 8px 22px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+
+    #export-btn:hover:not(:disabled) { background: var(--accent-light); }
+    #export-btn:disabled { opacity: 0.3; cursor: default; }
+
+    /* ── Utility ────────────────────────────────────────────────────────── */
+    .err { color: #c04848; font-size: 0.7rem; margin-top: 12px; }
+
+    #pool-section[hidden] { display: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Collection Curation</h1>
+  <span>Wereld Museum · Linked Collection</span>
+</header>
+
+<div id="query-bar">
+  {% if text2sparql_mode == 'category_select' %}
+    <label>Category</label>
+    {% for cat in categories %}
+      <button class="cat-btn" data-cat="{{ cat }}">{{ cat }}</button>
+    {% endfor %}
+    <button id="cat-search-btn" disabled>Search</button>
+  {% else %}
+    <label>Search</label>
+    <form id="kw-form">
+      <div id="keyword-wrap">
+        <input id="keyword-input" type="text" placeholder="e.g. funeral masks, West Africa…" autocomplete="off">
+        <button class="search-btn" type="submit">Search</button>
+      </div>
+    </form>
+  {% endif %}
+</div>
+
+<main>
+  <div id="pool-section" hidden>
+    <canvas id="cobweb" aria-hidden="true"></canvas>
+    <div id="spider" aria-hidden="true">🕷</div>
+    <div class="section-meta">
+      <span class="section-label">Exploring</span>
+      <span class="section-stat" id="pool-stat"></span>
+    </div>
+    <div id="pool-grid"></div>
+    <div id="controls-bar">
+      <button id="prev-btn" disabled>← Previous</button>
+      <button id="next-btn" disabled>Next batch →</button>
+      <span id="status-msg"></span>
+    </div>
+  </div>
+
+  <div id="selected-section">
+    <div class="section-meta">
+      <span class="section-label">Selection</span>
+      <span class="section-stat" id="sel-stat">0 items</span>
+    </div>
+    <div id="selected-grid">
+      <span class="empty-msg">No items selected yet.</span>
+    </div>
+    <button id="export-btn" disabled>Export →</button>
+  </div>
+
+  <div id="err-area"></div>
+</main>
+
+<script>
+  const N = {{ n_per_batch }};
+  const MODE = "{{ text2sparql_mode }}";
+
+  /* ── State ──────────────────────────────────────────────────────────── */
+  let pool     = [];   // full result pool for current search
+  let selected = [];   // accumulated yes-picks — persists across searches
+  let meta     = { query: '', sparql: '' };
+  let serverHistory = { accepted: [], rejected: [], seen: [] };
+
+  // Batch navigation: each entry is {displayed: [...], choices: {id: 'yes'|'no'}}
+  // batchIdx points at what's currently shown; only atFrontier() triggers server calls.
+  let batches  = [];
+  let batchIdx = -1;
+
+  function atFrontier() { return batches.length > 0 && batchIdx === batches.length - 1; }
+  function curBatch()   { return batches[batchIdx] || { displayed: [], choices: {} }; }
+
+  /* ── DOM ────────────────────────────────────────────────────────────── */
+  const poolSection = document.getElementById('pool-section');
+  const poolGrid    = document.getElementById('pool-grid');
+  const poolStat    = document.getElementById('pool-stat');
+  const prevBtn     = document.getElementById('prev-btn');
+  const nextBtn     = document.getElementById('next-btn');
+  const statusMsg   = document.getElementById('status-msg');
+  const selGrid     = document.getElementById('selected-grid');
+  const selStat     = document.getElementById('sel-stat');
+  const exportBtn   = document.getElementById('export-btn');
+  const errArea     = document.getElementById('err-area');
+
+  /* ── Helpers ────────────────────────────────────────────────────────── */
+  function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function photoOf(item) { return item.properties?.url_photo || ''; }
+  function shortId(id)   { return id.split('/').pop() || id; }
+  function clearErr()    { errArea.innerHTML = ''; }
+  function showErr(msg)  { errArea.innerHTML = `<p class="err">${esc(msg)}</p>`; }
+
+  function mergePools(pools) {
+    const seen = new Set();
+    const out  = [];
+    for (const p of pools) {
+      for (const item of p) {
+        const key = item.id + '||' + (item.properties?.url_photo || '');
+        if (!seen.has(key)) { seen.add(key); out.push(item); }
       }
+    }
+    return out;
+  }
 
-      function renderCards(items, titleText) {
-        const cardsHtml = [
-          `<p>${titleText}</p>`,
-          '<div class="result-grid">',
-          ...items.map((item, index) => {
-            const itemId = getItemId(item, index);
-            const title = item.artifacttitle || item.title || item.itemLabel || "Untitled";
-            const photoUrl = item.url_photo || "";
-            const safeTitle = title.replace(/"/g, "&quot;");
-            const imageHtml = photoUrl && photoUrl.trim()
-              ? `<img src="${photoUrl}" width="150" />`
-              : "";
-            const choice = currentChoices[itemId];
-            const yesActive = choice === "yes" ? "active" : "";
-            const noActive = choice === "no" ? "active" : "";
+  /* ── Nav button state ───────────────────────────────────────────────── */
+  function updateNav() {
+    prevBtn.disabled = batchIdx <= 0;
+    if (!atFrontier()) {
+      nextBtn.disabled    = false;
+      nextBtn.textContent = 'Forward →';
+    } else {
+      const unseen = pool.filter(i => !serverHistory.seen.includes(i.id)).length;
+      nextBtn.disabled    = pool.length > 0 && unseen === 0;
+      nextBtn.textContent = 'Next batch →';
+    }
+    if (batches.length > 1 || !atFrontier()) {
+      const marker = atFrontier() ? '' : '  (browsing past)';
+      statusMsg.textContent = `Batch ${batchIdx + 1} / ${batches.length}${marker}`;
+    } else {
+      statusMsg.textContent = '';
+    }
+  }
 
-            return `
-              <div class="result-card" data-item-id="${itemId}">
-                <div>${imageHtml || '<div class="thumb empty">No image available</div>'}</div>
-                <div class="title">${safeTitle}</div>
-                <div class="actions">
-                  <button class="action-btn ${yesActive}" type="button" data-choice="yes">Yes</button>
-                  <button class="action-btn ${noActive}" type="button" data-choice="no">No</button>
-                </div>
-              </div>`;
-          }),
-          '</div>'
-        ].join("");
+  /* ── Render pool ────────────────────────────────────────────────────── */
+  function renderPool() {
+    const { displayed, choices } = curBatch();
 
-        return cardsHtml;
-      }
+    if (!displayed.length) {
+      poolGrid.innerHTML = '<p style="color:var(--text-muted);font-size:.7rem;">Pool exhausted.</p>';
+      nextBtn.disabled = true;
+      return;
+    }
 
-      function renderActionBar() {
-        return `
-          <div class="submit-row">
-            <button id="submitBtn" type="button">Submit</button>
-            <button id="extractBtn" type="button" disabled>Extract</button>
+    poolGrid.innerHTML = displayed.map(item => {
+      const choice = choices[item.id] || '';
+      const photo  = photoOf(item);
+      const img    = photo
+        ? `<img class="card-img" src="${esc(photo)}" alt="" loading="lazy">`
+        : `<div class="card-no-img">no image</div>`;
+      return `
+        <div class="artifact-card${choice ? ' voted-' + choice : ''}" data-id="${esc(item.id)}">
+          ${img}
+          <div class="card-body">
+            <div class="card-title">${esc(item.title)}</div>
+            <div class="card-id"><a href="${esc(item.id)}" target="_blank" rel="noopener">${esc(shortId(item.id))}</a></div>
+            <div class="card-votes">
+              <button class="vote-btn yes${choice==='yes'?' active':''}" data-choice="yes">✓ Keep</button>
+              <button class="vote-btn no${choice==='no'?' active':''}"  data-choice="no">✗ Skip</button>
+            </div>
           </div>
-        `;
-      }
+        </div>`;
+    }).join('');
 
-      function updateExtractState() {
-        const extractBtn = document.getElementById("extractBtn");
-        if (!extractBtn) return;
-        const yesCount = Object.values(currentChoices).filter((choice) => choice === "yes").length;
-        extractBtn.disabled = yesCount < 5;
-      }
+    poolGrid.querySelectorAll('.artifact-card').forEach(card => {
+      const id = card.dataset.id;
+      card.querySelectorAll('.vote-btn').forEach(btn => {
+        btn.addEventListener('click', () => vote(id, btn.dataset.choice, card));
+      });
+    });
 
-      function bindCardButtons() {
-        resultEl.querySelectorAll('.action-btn').forEach((button) => {
-          button.addEventListener('click', () => {
-            const card = button.closest('.result-card');
-            const itemId = card.getAttribute('data-item-id');
-            const choice = button.getAttribute('data-choice');
-            currentChoices[itemId] = choice;
+    const unseenCount = pool.filter(i => !serverHistory.seen.includes(i.id)).length;
+    poolStat.textContent = `${unseenCount} remaining in pool`;
+    updateNav();
+  }
 
-            const buttons = card.querySelectorAll('.action-btn');
-            buttons.forEach((b) => b.classList.remove('active'));
-            button.classList.add('active');
-            updateExtractState();
-          });
+  /* ── Render selected ────────────────────────────────────────────────── */
+  function renderSelected() {
+    selStat.textContent = `${selected.length} item${selected.length !== 1 ? 's' : ''}`;
+    if (!selected.length) {
+      selGrid.innerHTML = '<span class="empty-msg">No items selected yet.</span>';
+      exportBtn.disabled = true;
+      return;
+    }
+    selGrid.innerHTML = selected.map(item => {
+      const photo = photoOf(item);
+      const img   = photo
+        ? `<img src="${esc(photo)}" alt="" loading="lazy">`
+        : `<div class="sel-card-no-img"></div>`;
+      return `<div class="sel-card">${img}<div class="sel-card-title">${esc(item.title)}</div></div>`;
+    }).join('');
+    exportBtn.disabled = false;
+  }
+
+  /* ── Vote ───────────────────────────────────────────────────────────── */
+  function vote(id, choice, card) {
+    curBatch().choices[id] = choice;
+    card.classList.toggle('voted-yes', choice === 'yes');
+    card.classList.toggle('voted-no',  choice === 'no');
+    card.querySelectorAll('.vote-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.choice === choice);
+    });
+  }
+
+  /* ── Search ─────────────────────────────────────────────────────────── */
+  async function doSearch(queries) {
+    clearErr();
+    statusMsg.textContent = 'Querying…';
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+
+    // Reset navigation; selected persists intentionally
+    batches       = [];
+    batchIdx      = -1;
+    serverHistory = { accepted: [], rejected: [], seen: [] };
+
+    try {
+      let firstPool, firstDisplayed, firstSparql;
+
+      if (queries.length === 1) {
+        const r = await fetch('/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: queries[0], n: N }),
         });
-      }
-
-      function renderResults(entityName, items) {
-        currentDisplayedItems = items;
-        resultEl.innerHTML = renderCards(items, `<strong>${entityName}</strong>`) + renderActionBar();
-        bindCardButtons();
-        updateExtractState();
-      }
-
-      function attachSubmitHandler() {
-        const submitBtn = document.getElementById("submitBtn");
-        if (!submitBtn) return;
-        submitBtn.onclick = async () => {
-          const noItemIds = currentDisplayedItems
-            .map((item, index) => ({ item, itemId: getItemId(item, index) }))
-            .filter(({ itemId }) => currentChoices[itemId] === "no")
-            .map(({ itemId }) => itemId);
-
-          if (noItemIds.length === 0) {
-            updateExtractState();
-            return;
-          }
-
-          resultEl.innerHTML = '<p class="loading">Loading next set...</p>';
-
-          try {
-            const response = await fetch("/query", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ entity: currentEntityName }),
-            });
-
-            const data = await response.json();
-            if (!response.ok) {
-              throw new Error(data.error || "Query failed");
-            }
-
-            const availableItems = (data.items || []).filter((item, index) => {
-              const itemId = getItemId(item, index);
-              return !seenItemIds.has(itemId);
-            });
-            const shuffled = [...availableItems].sort(() => Math.random() - 0.5);
-            const replacements = shuffled.slice(0, noItemIds.length);
-            const nextItems = [];
-            const nextChoices = {};
-
-            currentDisplayedItems.forEach((item, index) => {
-              const itemId = getItemId(item, index);
-              const choice = currentChoices[itemId];
-              if (choice === "yes") {
-                nextItems.push(item);
-                nextChoices[itemId] = "yes";
-              } else if (choice === "no") {
-                const replacement = replacements.shift();
-                if (replacement) {
-                  const replacementId = getItemId(replacement, nextItems.length);
-                  nextItems.push(replacement);
-                  seenItemIds.add(replacementId);
-                }
-              } else {
-                nextItems.push(item);
-              }
-            });
-
-            currentChoices = nextChoices;
-            renderResults(currentEntityName, nextItems);
-          } catch (error) {
-            resultEl.innerHTML = `<p class="error">Error: ${error.message}</p>`;
-          }
-        };
-      }
-
-      function attachExtractHandler() {
-        const extractBtn = document.getElementById("extractBtn");
-        if (!extractBtn) return;
-        extractBtn.onclick = () => {
-          const selections = currentDisplayedItems.filter((item, index) => {
-            const itemId = getItemId(item, index);
-            return currentChoices[itemId] === "yes";
-          });
-
-          if (selections.length < 5) {
-            alert("You need 5 selections before extracting.");
-            return;
-          }
-
-          fetch('/save_selections', {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Search failed');
+        firstPool      = d.pool;
+        firstDisplayed = d.displayed;
+        firstSparql    = d.sparql;
+      } else {
+        // Parallel requests for each category, then merge pools
+        const results = await Promise.all(queries.map(q =>
+          fetch('/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ selections })
-          }).then(r => r.json()).then(resp => {
-            extractBtn.disabled = true;
-            extractBtn.textContent = 'Exported';
-            resultEl.innerHTML = `<p>Saved ${selections.length} selections to ${resp.path}</p>`;
-          }).catch(err => {
-            resultEl.innerHTML = `<p class="error">Failed to save selections: ${err}</p>`;
-          });
-        };
-      }
-
-      // Fetch entities from server and render buttons
-      fetch("/entities")
-        .then(response => response.json())
-        .then(data => {
-          const entities = data.entities;
-          Object.entries(entities).forEach(([label]) => {
-            const btn = document.createElement("button");
-            btn.textContent = label;
-            btn.addEventListener("click", () => runQuery(label));
-            buttonsEl.appendChild(btn);
-          });
+            body: JSON.stringify({ query: q, n: N }),
+          }).then(r => r.json())
+        ));
+        firstPool   = mergePools(results.map(d => d.pool));
+        firstSparql = results.map(d => d.sparql).join('\n--- next query ---\n');
+        // Ask the server's SelectionStrategy to pick the first batch
+        const nr = await fetch('/next', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pool: firstPool, n: N, history: serverHistory }),
         });
-
-      async function runQuery(entityName) {
-        currentEntityName = entityName;
-        resultEl.innerHTML = '<p class="loading">Loading results for ' + entityName + '...</p>';
-
-        try {
-          const response = await fetch("/query", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ entity: entityName }),
-          });
-
-          const data = await response.json();
-          if (!response.ok) {
-            throw new Error(data.error || "Query failed");
-          }
-
-          if (!data.items || data.items.length === 0) {
-            resultEl.innerHTML = '<p>No results returned.</p>';
-            return;
-          }
-
-          const shuffled = [...data.items].sort(() => Math.random() - 0.5).slice(0, 5);
-          currentChoices = {};
-          shuffled.forEach((item, index) => {
-            const itemId = getItemId(item, index);
-            seenItemIds.add(itemId);
-          });
-          renderResults(entityName, shuffled);
-          attachSubmitHandler();
-          attachExtractHandler();
-        } catch (error) {
-          resultEl.innerHTML = `<p class="error">Error: ${error.message}</p>`;
-        }
+        const nd = await nr.json();
+        if (!nr.ok) throw new Error(nd.error || 'Failed to get first batch');
+        firstDisplayed = nd.displayed;
       }
-    </script>
-  </body>
+
+      pool = firstPool;
+      meta = { query: queries.join(' + '), sparql: firstSparql };
+      serverHistory.seen = firstDisplayed.map(i => i.id);
+
+      batches  = [{ displayed: firstDisplayed, choices: {} }];
+      batchIdx = 0;
+
+      poolSection.hidden = false;
+      renderPool();
+      renderSelected();
+    } catch (e) {
+      showErr(e.message);
+      statusMsg.textContent = '';
+    }
+  }
+
+  /* ── Previous batch ─────────────────────────────────────────────────── */
+  function prevBatch() {
+    if (batchIdx <= 0) return;
+    batchIdx -= 1;
+    renderPool();
+  }
+
+  /* ── Next batch ─────────────────────────────────────────────────────── */
+  async function nextBatch() {
+    if (!atFrontier()) {
+      // Just navigate forward through already-fetched batches
+      batchIdx += 1;
+      renderPool();
+      return;
+    }
+
+    // At frontier: commit yes-votes to selected, then fetch a new batch
+    const { displayed, choices } = curBatch();
+    const yesItems = displayed.filter(i => choices[i.id] === 'yes');
+    selected.push(...yesItems);
+    serverHistory.accepted.push(...yesItems.map(i => i.id));
+    serverHistory.rejected.push(...displayed.filter(i => choices[i.id] === 'no').map(i => i.id));
+
+    nextBtn.disabled = true;
+    statusMsg.textContent = 'Loading…';
+    renderSelected();
+
+    try {
+      const r = await fetch('/next', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pool, n: N, history: serverHistory }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Failed');
+
+      const newDisplayed = d.displayed;
+      serverHistory.seen.push(...newDisplayed.map(i => i.id));
+
+      batches.push({ displayed: newDisplayed, choices: {} });
+      batchIdx = batches.length - 1;
+
+      renderPool();
+    } catch (e) {
+      showErr(e.message);
+      statusMsg.textContent = '';
+      updateNav();
+    }
+  }
+
+  /* ── Export ─────────────────────────────────────────────────────────── */
+  async function doExport() {
+    exportBtn.disabled = true;
+    try {
+      const r = await fetch('/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: selected, meta }),
+      });
+      if (!r.ok) {
+        const d = await r.json();
+        throw new Error(d.error || 'Export failed');
+      }
+      const blob = await r.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = Object.assign(document.createElement('a'), { href: url, download: 'exhibition.json' });
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showErr(e.message);
+    } finally {
+      exportBtn.disabled = selected.length === 0;
+    }
+  }
+
+  /* ── Wire up ────────────────────────────────────────────────────────── */
+  prevBtn.addEventListener('click', prevBatch);
+  nextBtn.addEventListener('click', nextBatch);
+  exportBtn.addEventListener('click', doExport);
+
+  if (MODE === 'category_select') {
+    let selectedCats = new Set();
+    const catSearchBtn = document.getElementById('cat-search-btn');
+
+    document.querySelectorAll('.cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cat = btn.dataset.cat;
+        if (selectedCats.has(cat)) {
+          selectedCats.delete(cat);
+          btn.classList.remove('active');
+        } else {
+          selectedCats.add(cat);
+          btn.classList.add('active');
+        }
+        catSearchBtn.disabled = selectedCats.size === 0;
+      });
+    });
+
+    catSearchBtn.addEventListener('click', () => {
+      if (selectedCats.size > 0) doSearch([...selectedCats]);
+    });
+  } else {
+    document.getElementById('kw-form').addEventListener('submit', e => {
+      e.preventDefault();
+      const q = document.getElementById('keyword-input').value.trim();
+      if (q) doSearch([q]);
+    });
+  }
+</script>
+
+<style>
+  /* ── Cobweb easter egg ─────────────────────────────────────────────────── */
+  #cobweb {
+    position: absolute;
+    top: 0; right: 0;
+    width: 160px; height: 160px;
+    pointer-events: none;
+    opacity: 0.55;
+    z-index: 0;
+  }
+  #spider {
+    position: absolute;
+    top: 82px; right: 14px;
+    font-size: 0.95rem;
+    pointer-events: none;
+    z-index: 1;
+    transform-origin: center top;
+    animation: spidersway 6s ease-in-out infinite;
+    opacity: 0.65;
+  }
+  @keyframes spidersway {
+    0%, 100% { transform: rotate(-8deg); }
+    50%       { transform: rotate(8deg); }
+  }
+  /* ensure pool content renders above canvas */
+  #pool-section .section-meta,
+  #pool-section #pool-grid,
+  #pool-section #controls-bar { position: relative; z-index: 1; }
+</style>
+<script>
+  (function () {
+    const canvas = document.getElementById('cobweb');
+    const dpr  = window.devicePixelRatio || 1;
+    const size = 160;
+    canvas.width  = size * dpr;
+    canvas.height = size * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    // Corner at top-right of the canvas
+    const cx = size, cy = 0;
+    const numSpokes = 8;
+    const numRings  = 6;
+    const maxR = size - 6;
+    // Sweep from pointing left (π) down to pointing down (π*1.5)
+    const a0 = Math.PI, a1 = Math.PI * 1.5;
+
+    ctx.strokeStyle = '#7a5e20';  // accent colour — visible on parchment
+    ctx.lineWidth   = 0.9;
+
+    // Spokes
+    for (let i = 0; i <= numSpokes; i++) {
+      const a = a0 + (i / numSpokes) * (a1 - a0);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * maxR, cy + Math.sin(a) * maxR);
+      ctx.stroke();
+    }
+
+    // Rings (straight segments between spoke points, curved feel via short segments)
+    for (let ring = 1; ring <= numRings; ring++) {
+      const r = (ring / numRings) * maxR;
+      ctx.beginPath();
+      for (let i = 0; i <= numSpokes; i++) {
+        const a = a0 + (i / numSpokes) * (a1 - a0);
+        const x = cx + Math.cos(a) * r;
+        const y = cy + Math.sin(a) * r;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  })();
+
+</script>
+</body>
 </html>
