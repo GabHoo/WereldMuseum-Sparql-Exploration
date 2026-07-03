@@ -591,7 +591,7 @@
       const kept  = isKept(item.id);
       const photo = photoOf(item);
       const img   = photo
-        ? `<img class="card-img" src="${esc(photo)}" alt="" loading="lazy">`
+        ? `<img class="card-img" src="${esc(photo)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'card-no-img',textContent:'no image'}))">`
         : `<div class="card-no-img">no image</div>`;
       return `
         <div class="artifact-card${kept ? ' kept' : ''}" data-id="${esc(item.id)}">
@@ -629,7 +629,7 @@
       selGrid.innerHTML = selected.map(item => {
         const photo = photoOf(item);
         const img   = photo
-          ? `<img src="${esc(photo)}" alt="" loading="lazy">`
+          ? `<img src="${esc(photo)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'sel-card-no-img'}))">`
           : `<div class="sel-card-no-img"></div>`;
         return `
           <div class="sel-card">
