@@ -26,7 +26,7 @@ Open `http://127.0.0.1:5000`.
 All module selection is done via `.env`. Copy `.env.example` to `.env` and set:
 
 ```ini
-TEXT2SPARQL=category_select       # category_select | template_keyword
+QUERY_GENERATION=category_select  # category_select | template_keyword
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
 SELECTION=random                  # random
 EXPORTER=json                     # json
@@ -39,7 +39,7 @@ EXPORTER=json                     # json
 | `sparql_endpoint` | `SPARQL_ENDPOINT_URL=https://...` |
 | `rdf_file` | `RDF_FILE_PATH=path/to/collection.ttl` |
 
-### Text-to-SPARQL
+### Query generation
 
 | Key | How it works |
 |-----|-------------|
@@ -70,7 +70,7 @@ app.py              Flask app — thin orchestration layer
 config.py           Module registry and wiring; reads .env
 modules/
   base.py           ABCs and SelectionHistory dataclass
-  text2sparql/      Text-to-SPARQL implementations
+  query_generation/ Query generation implementations
   knowledge_base/   SPARQL execution backends
   selection/        Item selection strategies
   exporter/         Export formats

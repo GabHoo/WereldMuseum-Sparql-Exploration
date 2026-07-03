@@ -12,7 +12,7 @@ A modular, graph-agnostic tool that helps museum curators build exhibitions by q
 User types NL query
         │
         ▼
-  [Text2SPARQL]  ──converts──▶  SPARQL query string
+  [QueryGeneration]  ──converts──▶  SPARQL query string
         │
         ▼
   [KnowledgeBase]  ──executes──▶  result pool
@@ -31,7 +31,7 @@ User types NL query
 
 ## Module Specifications
 
-### 1. Text2SPARQL
+### 1. QueryGeneration
 
 Converts user input into a valid SPARQL string for the target graph.
 
@@ -42,7 +42,7 @@ Converts user input into a valid SPARQL string for the target graph.
 | **Output** | `str` — a valid SPARQL SELECT query |
 
 ```python
-class Text2SPARQL(ABC):
+class QueryGeneration(ABC):
     def convert(self, nl_query: str, context: dict) -> str: ...
 ```
 
@@ -51,7 +51,7 @@ class Text2SPARQL(ABC):
 | Name | Key | How it works |
 |------|-----|-------------|
 | `CategorySelect` | `category_select` | UI presents a fixed list of choices from `context["categories"]`. User picks one → known URI → substituted into a SPARQL template. No text input. |
-| `TemplateKeyword` | `template_keyword` | UI shows a text box. User types keywords. These are substituted into a parameterised SPARQL template stored in `context["keyword_sparql_template"]`. |
+| `KeywordMatching` | `keyword_matching` | UI shows a free-text box. Words are matched against a thesaurus (CSV: concept, prefLabel, broad, altLabels). Matched URIs are collapsed to coherent superconcepts and injected into a `VALUES`-based SPARQL template. Thesaurus files configured via `KEYWORD_MATCHING_THESAURUS_FILES`. |
 
 Future swap-in: LLM-based (`llm`) that uses `context["schema_snippet"]` to prompt a model.
 
@@ -148,7 +148,7 @@ Configuration lives in two files:
 
 **`.env`** (not committed, copied from `.env.example`):
 ```ini
-TEXT2SPARQL=category_select
+QUERY_GENERATION=category_select
 KNOWLEDGE_BASE=sparql_endpoint
 SELECTION=random
 EXPORTER=json
@@ -162,9 +162,9 @@ RDF_FILE_PATH=
 
 ```python
 REGISTRY = {
-    "text2sparql": {
-        "category_select": "modules.text2sparql.category_select.CategorySelect",
-        "template_keyword": "modules.text2sparql.template_keyword.TemplateKeyword",
+    "query_generation": {
+        "category_select":  "modules.query_generation.category_select.CategorySelect",
+        "keyword_matching": "modules.query_generation.keyword_matching.KeywordMatching",
     },
     "knowledge_base": {
         "sparql_endpoint": "modules.knowledge_base.sparql_endpoint.SPARQLEndpoint",
@@ -243,10 +243,10 @@ museum_curation/
 ├── modules/
 │   ├── base.py                          # ABCs + SelectionHistory dataclass
 │   ├── run_logger.py                    # RunLogger — append-only JSON Lines event log
-│   ├── text2sparql/
+│   ├── query_generation/
 │   │   ├── _stub.py                     # copy-paste template for new impls
 │   │   ├── category_select.py           # baseline: fixed category buttons
-│   │   └── template_keyword.py          # keyword fills SPARQL template
+│   │   └── keyword_matching.py          # keyword → concept URI matching (WIP)
 │   ├── knowledge_base/
 │   │   ├── _stub.py
 │   │   ├── sparql_endpoint.py           # remote HTTP endpoint via SPARQLWrapper
@@ -322,7 +322,7 @@ Switching to a different graph = create a new `collections/<graph>/` folder, poi
 
 ## Out of Scope (for now)
 
-- LLM-based Text2SPARQL (interface + context dict ready, impl deferred)
+- LLM-based QueryGeneration (interface + context dict ready, impl deferred)
 - Scored / active-learning SelectionStrategy (interface + score field ready, impl deferred)
 - Object validation
 - User accounts or persistent sessions

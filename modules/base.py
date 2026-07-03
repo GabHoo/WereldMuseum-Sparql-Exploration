@@ -17,7 +17,7 @@ class SelectionHistory:
         )
 
 
-class Text2SPARQL(ABC):
+class QueryGeneration(ABC):
     @abstractmethod
     def convert(self, nl_query: str, context: dict) -> str:
         """Convert natural-language input to a SPARQL SELECT query string."""
@@ -26,6 +26,14 @@ class Text2SPARQL(ABC):
         """
         Return display labels for category-based UI (e.g. button labels).
         Default is empty — only meaningful for CategorySelect-style implementations.
+        """
+        return []
+
+    def match_concepts(self, nl_query: str) -> list:
+        """
+        Return the intermediate concepts derived from nl_query before SPARQL generation.
+        Each entry is {"label": str, "uri": str}.
+        Default is empty — override in implementations that do explicit concept matching.
         """
         return []
 

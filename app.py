@@ -114,10 +114,10 @@ def _normalize_pool(raw_rows: list) -> list:
 
 @app.route("/")
 def index():
-    t2s = MODULES["text2sparql"]
+    t2s = MODULES["query_generation"]
     return render_template(
         "index.html",
-        text2sparql_mode=MODULES["text2sparql_key"],
+        query_generation_mode=MODULES["query_generation_key"],
         categories=t2s.get_categories(),
         n_per_batch=config.N_PER_BATCH,
     )
@@ -132,22 +132,24 @@ def search():
     if not nl_query:
         return jsonify({"error": "query is required"}), 400
 
+    qg = MODULES["query_generation"]
+    concepts = qg.match_concepts(nl_query)
     try:
-        sparql = MODULES["text2sparql"].convert(nl_query, {})
+        sparql = qg.convert(nl_query, {})
         raw = MODULES["knowledge_base"].execute(sparql)
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": str(exc), "concepts": concepts}), 500
 
     # Normalize the raw SPARQL results into the internal pool item schema
     pool = _normalize_pool(raw)
     if not pool:
-        return jsonify({"sparql": sparql, "pool": [], "displayed": []})
+        return jsonify({"sparql": sparql, "pool": [], "displayed": [], "concepts": concepts})
 
     history = SelectionHistory()
     displayed = MODULES["selection"].select(pool, n, history)
 
     MODULES["logger"].log_search(nl_query, sparql, pool, displayed)
-    return jsonify({"sparql": sparql, "pool": pool, "displayed": displayed})
+    return jsonify({"sparql": sparql, "pool": pool, "displayed": displayed, "concepts": concepts})
 
 
 @app.route("/next", methods=["POST"])

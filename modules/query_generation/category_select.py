@@ -1,7 +1,7 @@
 import json
 import pathlib
 
-from modules.base import Text2SPARQL
+from modules.base import QueryGeneration
 
 # Default categories for the Wereld Museum / Colonial Collections graph.
 # These are bundled as the "dummy" baseline implementation.
@@ -46,9 +46,9 @@ _SPARQL_TEMPLATE = """
 """
 
 
-class CategorySelect(Text2SPARQL):
+class CategorySelect(QueryGeneration):
     """
-    Baseline Text2SPARQL implementation: presents the user with a fixed list
+    Baseline QueryGeneration implementation: presents the user with a fixed list
     of category buttons. Each button maps to a known concept URI which is
     substituted into the SPARQL template.
 

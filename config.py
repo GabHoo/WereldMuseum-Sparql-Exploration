@@ -18,9 +18,9 @@ load_dotenv()
 # ── Registry: key → dotted class path ────────────────────────────────────────
 
 REGISTRY = {
-    "text2sparql": {
-        "category_select":  "modules.text2sparql.category_select.CategorySelect",
-        "template_keyword": "modules.text2sparql.template_keyword.TemplateKeyword",
+    "query_generation": {
+        "category_select":  "modules.query_generation.category_select.CategorySelect",
+        "keyword_matching": "modules.query_generation.keyword_matching.KeywordMatching",
     },
     "knowledge_base": {
         "sparql_endpoint": "modules.knowledge_base.sparql_endpoint.SPARQLEndpoint",
@@ -56,16 +56,14 @@ N_PER_BATCH = int(os.getenv("N_PER_BATCH", "10"))
 
 # ── Module builders ───────────────────────────────────────────────────────────
 
-def _build_text2sparql(key: str):
-    cls = _load_class("text2sparql", key)
+def _build_query_generation(key: str):
+    cls = _load_class("query_generation", key)
     if key == "category_select":
-        return cls()
-    if key == "template_keyword":
-        categories_file = os.getenv("CATEGORIES_FILE", "")
-        return cls(
-            categories_file=categories_file,
-            entity_uris_file=os.getenv("TEMPLATE_KEYWORD_ENTITY_URIS_FILE", ""),
-        )
+        return cls(categories_file=os.getenv("CATEGORIES_FILE", ""))
+    if key == "keyword_matching":
+        files_raw = os.getenv("KEYWORD_MATCHING_THESAURUS_FILES", "")
+        files = [f.strip() for f in files_raw.split(",") if f.strip()]
+        return cls(thesaurus_files=files)
     return cls()
 
 
@@ -95,16 +93,16 @@ def _build_logger():
 
 
 def build_modules() -> dict:
-    t2s_key = os.getenv("TEXT2SPARQL", "category_select")
+    qg_key  = os.getenv("QUERY_GENERATION", "category_select")
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
     sel_key = os.getenv("SELECTION", "random")
     exp_key = os.getenv("EXPORTER", "json")
 
     return {
-        "text2sparql":     _build_text2sparql(t2s_key),
-        "knowledge_base":  _build_knowledge_base(kb_key),
-        "selection":       _build_selection(sel_key),
-        "exporter":        _build_exporter(exp_key),
-        "logger":          _build_logger(),
-        "text2sparql_key": t2s_key,
+        "query_generation":     _build_query_generation(qg_key),
+        "knowledge_base":       _build_knowledge_base(kb_key),
+        "selection":            _build_selection(sel_key),
+        "exporter":             _build_exporter(exp_key),
+        "logger":               _build_logger(),
+        "query_generation_key": qg_key,
     }
