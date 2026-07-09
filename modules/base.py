@@ -57,3 +57,12 @@ class Exporter(ABC):
     @abstractmethod
     def export(self, items: list, meta: dict) -> bytes:
         """Serialise selected items + meta into bytes for download."""
+
+
+class ExhibitionBuilder(ABC):
+    @abstractmethod
+    def build(self, export_data: dict) -> None:
+        """
+        Produce a digital exhibition from a curated selection.
+        export_data: the dict produced by Exporter — { meta: {...}, items: [...] }
+        """

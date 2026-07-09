@@ -430,8 +430,13 @@
       align-self: center;
     }
 
-    #export-btn {
+    .action-row {
+      display: flex;
+      gap: 8px;
       margin-top: 12px;
+    }
+
+    #export-btn, #exhibition-btn {
       background: var(--accent);
       border: 1px solid var(--accent);
       color: #fff;
@@ -444,8 +449,11 @@
       transition: background 0.12s;
     }
 
-    #export-btn:hover:not(:disabled) { background: var(--accent-light); }
-    #export-btn:disabled { opacity: 0.3; cursor: default; }
+    #export-btn:hover:not(:disabled),
+    #exhibition-btn:hover:not(:disabled) { background: var(--accent-light); }
+
+    #export-btn:disabled,
+    #exhibition-btn:disabled { opacity: 0.3; cursor: default; }
 
     /* ── Utility ────────────────────────────────────────────────────────── */
     .err { color: #c04848; font-size: 0.7rem; margin-top: 12px; }
@@ -504,7 +512,10 @@
     <div id="selected-grid">
       <span class="empty-msg">No items selected yet.</span>
     </div>
-    <button id="export-btn" disabled>Export →</button>
+    <div class="action-row">
+      <button id="export-btn" disabled>Export →</button>
+      <button id="exhibition-btn" disabled>Build Exhibition →</button>
+    </div>
   </div>
 
   <div id="err-area"></div>
@@ -538,7 +549,8 @@
   const statusMsg   = document.getElementById('status-msg');
   const selGrid     = document.getElementById('selected-grid');
   const selStat     = document.getElementById('sel-stat');
-  const exportBtn   = document.getElementById('export-btn');
+  const exportBtn      = document.getElementById('export-btn');
+  const exhibitionBtn  = document.getElementById('exhibition-btn');
   const errArea     = document.getElementById('err-area');
 
   /* ── Helpers ────────────────────────────────────────────────────────── */
@@ -642,7 +654,8 @@
         btn.addEventListener('click', () => removeItem(btn.dataset.id));
       });
     }
-    exportBtn.disabled = selected.length === 0;
+    exportBtn.disabled     = selected.length === 0;
+    exhibitionBtn.disabled = selected.length === 0;
   }
 
   /* ── Keep ───────────────────────────────────────────────────────────── */
@@ -844,7 +857,8 @@
     } catch (e) {
       showErr(e.message);
     } finally {
-      exportBtn.disabled = selected.length === 0;
+      exportBtn.disabled     = selected.length === 0;
+      exhibitionBtn.disabled = selected.length === 0;
     }
   }
 
