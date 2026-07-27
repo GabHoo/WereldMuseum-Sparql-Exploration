@@ -1,5 +1,6 @@
 import io
 import os
+import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -79,15 +80,17 @@ def _normalize_pool(raw_rows: list) -> list:
     """
     fm = config.FIELD_MAP
 
-    # Parallel-fetch all unique photo URLs not yet in the cache, then compare
-    # each against the reference placeholder hash.  Cache-hits are free on
-    # every subsequent search that returns the same URLs.
     unique_photos = {
         row.get("url_photo", "").strip()
         for row in raw_rows
         if row.get("url_photo", "").strip()
     }
-    _prefetch_placeholders(unique_photos)
+    # Warm the cache in the background so future searches benefit; don't block
+    # the current request waiting for image downloads.
+    if unique_photos and _ref_hash is not None:
+        threading.Thread(
+            target=_prefetch_placeholders, args=(unique_photos,), daemon=True
+        ).start()
 
     seen: set = set()
     pool = []
@@ -96,7 +99,9 @@ def _normalize_pool(raw_rows: list) -> list:
         if not item_id:
             continue
         photo = row.get("url_photo", "").strip()
-        if not photo or _check_url(photo):
+        # Only drop photos that are already confirmed placeholders in cache.
+        # Unknown URLs are included now; the frontend onerror hides broken cards.
+        if not photo or _placeholder_cache.get(photo, False):
             continue
         if item_id in seen:
             continue
@@ -133,7 +138,8 @@ def search():
         return jsonify({"error": "query is required"}), 400
 
     qg = MODULES["query_generation"]
-    concepts = qg.match_concepts(nl_query)
+    concepts       = qg.match_concepts(nl_query)
+    query_features = qg.get_query_features(nl_query)
     try:
         sparql = qg.convert(nl_query, {})
         raw = MODULES["knowledge_base"].execute(sparql)
@@ -143,13 +149,16 @@ def search():
     # Normalize the raw SPARQL results into the internal pool item schema
     pool = _normalize_pool(raw)
     if not pool:
-        return jsonify({"sparql": sparql, "pool": [], "displayed": [], "concepts": concepts})
+        return jsonify({"sparql": sparql, "pool": [], "displayed": [], "concepts": concepts, "metrics": None})
 
     history = SelectionHistory()
     displayed = MODULES["selection"].select(pool, n, history)
 
-    MODULES["logger"].log_search(nl_query, sparql, pool, displayed)
-    return jsonify({"sparql": sparql, "pool": pool, "displayed": displayed, "concepts": concepts})
+    evaluator = MODULES.get("retrieval_evaluator")
+    metrics   = evaluator.score(pool, query_features) if evaluator else None
+
+    MODULES["logger"].log_search(nl_query, sparql, pool, displayed, query_features)
+    return jsonify({"sparql": sparql, "pool": pool, "displayed": displayed, "concepts": concepts, "metrics": metrics})
 
 
 @app.route("/next", methods=["POST"])

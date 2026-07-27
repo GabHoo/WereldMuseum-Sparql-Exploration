@@ -51,9 +51,23 @@ class QueryGeneration(ABC):
 | Name | Key | How it works |
 |------|-----|-------------|
 | `CategorySelect` | `category_select` | UI presents a fixed list of choices from `context["categories"]`. User picks one → known URI → substituted into a SPARQL template. No text input. |
-| `KeywordMatching` | `keyword_matching` | UI shows a free-text box. Words are matched against a thesaurus (CSV: concept, prefLabel, broad, altLabels). Matched URIs are collapsed to coherent superconcepts and injected into a `VALUES`-based SPARQL template. Thesaurus files configured via `KEYWORD_MATCHING_THESAURUS_FILES`. |
+| `KeywordMatching` | `keyword_matching` | UI shows a free-text box. Words are matched against a thesaurus (CSV: concept, prefLabel, broad, altLabels). Matched URIs are collapsed to coherent superconcepts and injected into a `VALUES`-based SPARQL template. Thesaurus files configured via `KEYWORD_MATCHING_THESAURUS_FILES`. Each matched concept's position in the `skos:broader*` hierarchy is used to name the feature it constrains: `Objecttrefwoord` → `typeLabel`, `Culturele Herkomst` → `herkomst`, `Geografische Herkomst` → `herkomst`, `Materiaal en techniek` → `materiaal`. These labelled features are returned by `get_query_features()` as the pinned feature dict passed to the `RetrievalEvaluator`. Requires `SPARQL_ENDPOINT_URL`; without it, all concepts fall back to `typeLabel`. |
 
 Future swap-in: LLM-based (`llm`) that uses `context["schema_snippet"]` to prompt a model.
+
+#### Shared feature schema
+
+The SPARQL `SELECT` clause is designed so that the variable names it returns match exactly the keys produced by `get_query_features()`:
+
+| Feature key | SPARQL variable | What it captures |
+|-------------|-----------------|-----------------|
+| `typeLabel` | `?typeLabel` | Object type (e.g. `maskers (kleding)`) |
+| `materiaal` | `?materiaal` | Material / technique |
+| `herkomst`  | `?herkomst`  | Cultural or geographic origin |
+
+This means **query features and item features share the same key vocabulary**. A query feature `{"typeLabel": "maskers (kleding)"}` is directly comparable to the `typeLabel` field in every pool item's `properties` dict — enabling the `RetrievalEvaluator` to measure surprise (distance from the query anchor) without any key translation.
+
+`get_query_features()` returns `{}` on implementations that don't produce typed concept matches (e.g. `CategorySelect`), in which case the evaluator treats the query as unpinned and reports only diversity.
 
 ---
 
@@ -124,7 +138,7 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 
 | | |
 |--|--|
-| **Events logged** | `search` — query, generated SPARQL, full pool, first displayed batch |
+| **Events logged** | `search` — query, query_features, generated SPARQL, full pool, first displayed batch |
 | | `next` — current history (accepted / rejected / seen), next displayed batch |
 | | `export` — exported items and metadata |
 | **Format** | JSON Lines (`.jsonl` / `.log`): one `json.loads()`-able object per line, append-only |
@@ -133,7 +147,7 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 
 ```python
 class RunLogger:
-    def log_search(self, query: str, sparql: str, pool: list, displayed: list) -> None: ...
+    def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None) -> None: ...
     def log_next(self, history: dict, displayed: list) -> None: ...
     def log_export(self, items: list, meta: dict) -> None: ...
 ```

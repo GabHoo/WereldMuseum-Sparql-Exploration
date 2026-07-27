@@ -210,6 +210,27 @@
       color: var(--text-muted);
     }
 
+    /* ── Pool metrics bar ──────────────────────────────────────────────── */
+    #pool-metrics {
+      display: flex;
+      gap: 24px;
+      margin: -8px 0 14px;
+      font-family: var(--mono);
+      font-size: 0.62rem;
+    }
+
+    .metric-label {
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      margin-right: 5px;
+    }
+
+    .metric-value {
+      color: var(--text-on-dark);
+      font-weight: 600;
+    }
+
     /* ── Card grid ──────────────────────────────────────────────────────── */
     #pool-grid {
       display: grid;
@@ -255,9 +276,10 @@
       padding: 8px 8px 6px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 5px;
       flex: 1;
     }
+
 
     .card-title {
       font-family: var(--serif);
@@ -496,6 +518,10 @@
       <span class="section-label">Exploring</span>
       <span class="section-stat" id="pool-stat"></span>
     </div>
+    <div id="pool-metrics" hidden>
+      <span><span class="metric-label">Diversity</span><span class="metric-value" id="metric-diversity">—</span></span>
+      <span><span class="metric-label">Surprise</span><span class="metric-value" id="metric-surprise">—</span></span>
+    </div>
     <div id="pool-grid"></div>
     <div id="controls-bar">
       <button id="prev-btn" disabled>← Previous</button>
@@ -526,8 +552,9 @@
   const MODE = "{{ query_generation_mode }}";
 
   /* ── State ──────────────────────────────────────────────────────────── */
-  let pool     = [];   // full result pool for current search
-  let selected = [];   // accumulated yes-picks — persists across searches
+  let pool           = [];   // full result pool for current search
+  let selected       = [];   // accumulated yes-picks — persists across searches
+  let currentMetrics = null; // last metrics response from /search
   let meta     = { query: '', sparql: '' };
   let serverHistory = { accepted: [], rejected: [], seen: [] };
 
@@ -551,6 +578,9 @@
   const selStat     = document.getElementById('sel-stat');
   const exportBtn      = document.getElementById('export-btn');
   const exhibitionBtn  = document.getElementById('exhibition-btn');
+  const poolMetrics    = document.getElementById('pool-metrics');
+  const metricDiversity = document.getElementById('metric-diversity');
+  const metricSurprise  = document.getElementById('metric-surprise');
   const errArea     = document.getElementById('err-area');
 
   /* ── Helpers ────────────────────────────────────────────────────────── */
@@ -603,7 +633,7 @@
       const kept  = isKept(item.id);
       const photo = photoOf(item);
       const img   = photo
-        ? `<img class="card-img" src="${esc(photo)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'card-no-img',textContent:'no image'}))">`
+        ? `<img class="card-img" src="${esc(photo)}" alt="" onerror="this.closest('.artifact-card').style.display='none'">`
         : `<div class="card-no-img">no image</div>`;
       return `
         <div class="artifact-card${kept ? ' kept' : ''}" data-id="${esc(item.id)}">
@@ -656,6 +686,14 @@
     }
     exportBtn.disabled     = selected.length === 0;
     exhibitionBtn.disabled = selected.length === 0;
+  }
+
+  /* ── Pool metrics ───────────────────────────────────────────────────── */
+  function renderMetrics(metrics) {
+    const fmt = v => (typeof v === 'number') ? v.toFixed(3) : '—';
+    metricDiversity.textContent = fmt(metrics?.diversity);
+    metricSurprise.textContent  = fmt(metrics?.surprise);
+    poolMetrics.hidden = false;
   }
 
   /* ── Keep ───────────────────────────────────────────────────────────── */
@@ -736,7 +774,7 @@
     serverHistory = { accepted: [], rejected: [], seen: [] };
 
     try {
-      let firstPool, firstDisplayed, firstSparql;
+      let firstPool, firstDisplayed, firstSparql, firstMetrics = null;
 
       if (queries.length === 1) {
         const r = await fetch('/search', {
@@ -750,6 +788,7 @@
         firstPool      = d.pool;
         firstDisplayed = d.displayed;
         firstSparql    = d.sparql;
+        firstMetrics   = d.metrics || null;
       } else {
         // Parallel requests for each category, then merge pools
         const results = await Promise.all(queries.map(q =>
@@ -774,6 +813,7 @@
 
       pool = firstPool;
       meta = { query: queries.join(' + '), sparql: firstSparql };
+      currentMetrics = firstMetrics || null;
       serverHistory.seen = firstDisplayed.map(i => i.id);
 
       batches  = [{ displayed: firstDisplayed }];
@@ -782,6 +822,7 @@
       poolSection.hidden = false;
       renderPool();
       renderSelected();
+      renderMetrics(currentMetrics);
     } catch (e) {
       showErr(e.message);
       statusMsg.textContent = '';

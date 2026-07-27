@@ -40,6 +40,7 @@ _SPARQL_TEMPLATE = """
         ?vi la:digitally_shown_by ?o2 .
         ?o2 la:access_point ?url_photo .
       }}
+      FILTER(BOUND(?url_photo))
     }}
     GROUP BY ?specificType ?artifact ?artifacttitle ?url_photo
     LIMIT 100

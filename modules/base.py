@@ -37,6 +37,15 @@ class QueryGeneration(ABC):
         """
         return []
 
+    def get_query_features(self, nl_query: str) -> dict:
+        """
+        Extract pinned feature constraints from nl_query as a flat dict.
+        Returns {feature_name: raw_value} for each feature the query constrains.
+        Default returns {} (all features are free; only diversity is computed).
+        Override in subclasses that perform structured feature extraction.
+        """
+        return {}
+
 
 class KnowledgeBase(ABC):
     @abstractmethod
@@ -57,6 +66,16 @@ class Exporter(ABC):
     @abstractmethod
     def export(self, items: list, meta: dict) -> bytes:
         """Serialise selected items + meta into bytes for download."""
+
+
+class RetrievalEvaluator(ABC):
+    @abstractmethod
+    def score(self, pool: list[dict], query: dict) -> dict:
+        """
+        Compute pool-level metrics from retrieved items and pinned query features.
+        query: {feature_name: raw_value} for each pinned feature; {} means all features free.
+        Returns {"diversity": float, "surprise": float}
+        """
 
 
 class ExhibitionBuilder(ABC):
