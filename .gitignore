@@ -4,3 +4,4 @@ __pycache__/
 .env
 saved_selections.json
 *.log
+.DS_Store
