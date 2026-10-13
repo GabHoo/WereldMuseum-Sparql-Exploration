@@ -8,7 +8,7 @@ Adding a new SPARQL field: it appears automatically in diversity computation.
 
 Usage (CLI):
     python -m modules.retrieval_evaluator.diversity_evaluator path/to/export.json
-    python -m modules.retrieval_evaluator.diversity_evaluator path/to/export.json --pinned typeLabel=masker
+    python -m modules.retrieval_evaluator.diversity_evaluator path/to/export.json --pinned type=maskers
 
 Environment:
     EMBEDDING_MODEL  — override the sentence-transformer model name
@@ -20,24 +20,27 @@ import sys
 from modules.base import RetrievalEvaluator
 from modules.retrieval_evaluator.base import FeatureEncoder, MetricsCalculator
 
-# Fields from SPARQL results that carry no semantic content for embedding.
-# URIs and internal identifiers are excluded; human-readable labels are kept.
-_NOISE_KEYS = frozenset({"url_photo", "artifact", "specificType"})
+# Artifact fields (modules/artifact.py) that carry no semantic content for
+# embedding: identifiers, URLs, measurements. Long free-text descriptions are
+# also skipped to keep per-search embedding cost low.
+_NOISE_KEYS = frozenset({"id", "images", "inventory_number", "dimensions", "description"})
 
 
 def _extract_features(item: dict) -> dict:
     """
-    Build a flat feature dict from a pool item.
-    Pulls all properties except noise keys, then adds title from the item root.
+    Build a feature dict from a pool item: its Artifact fields minus noise keys.
+    Values are str or list[str]; empty values are dropped.
     """
-    features = {
-        k: v
-        for k, v in item.get("properties", {}).items()
-        if k not in _NOISE_KEYS and isinstance(v, str) and v
-    }
-    title = item.get("title", "").strip()
-    if title and title != "Untitled":
-        features["title"] = title
+    features = {}
+    for k, v in item.get("properties", {}).items():
+        if k in _NOISE_KEYS:
+            continue
+        if isinstance(v, str) and v.strip():
+            features[k] = v
+        elif isinstance(v, list):
+            vals = [x for x in v if isinstance(x, str) and x.strip()]
+            if vals:
+                features[k] = vals
     return features
 
 
@@ -56,7 +59,7 @@ class DiversityEvaluator(RetrievalEvaluator):
     def score(self, pool: list[dict], query: dict) -> dict:
         """
         pool  : list of normalised pool items {id, title, score, properties}
-        query : pinned feature dict {feature_name: raw_value}; {} → all features free
+        query : pinned feature dict {feature_name: str | [str]}; {} → all features free
         Returns {"diversity": float, "surprise": float}
         """
         if not pool:

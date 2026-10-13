@@ -9,69 +9,120 @@ A modular, graph-agnostic tool that helps museum curators build exhibitions by q
 ## User Flow
 
 ```
-User types NL query
+User types NL query (or clicks a category)
         │
         ▼
-  [QueryGeneration]  ──converts──▶  SPARQL query string
-        │
-        ▼
-  [KnowledgeBase]  ──executes──▶  result pool
-        │
-        ▼
-  [SelectionStrategy]  ──picks N (~10)──▶  items shown to user
-        │                                          │
-  User reviews cards (Yes / No)            [RunLogger] ← records query,
-        │                                    pool, history, exports
-        ├─ "Next batch" ──▶ SelectionStrategy picks next N (seen items never return)
-        │
-        └─ enough Yes ──▶ [Exporter]  ──▶  JSON download
+  [QueryGeneration] ──converts──▶ FIND query (SELECT DISTINCT ?artifact … LIMIT 100)
+        │   concept_query only:              │
+        │   [ConceptMatcher] text ──▶ concepts {uri, label, feature}
+        │                                    ▼
+        │                        [KnowledgeBase] ──executes──▶ artifact URIs
+        │                                    │
+        │                                    ▼
+        │                        [ArtifactFetcher] ──FETCH query──▶ Artifact objects ──▶ pool
+        │                                    │      (same fields for every object, lists for multi-values)
+        └─ query features ─▶ [RetrievalEvaluator] ◀── pool   (optional: diversity / surprise)
+                                             ▼
+                       [SelectionStrategy] ──picks N (~10)──▶ items shown to user
+                                             │
+             User reviews cards (Yes / No)   │      [RunLogger] ← records query,
+                     │                               features, pool, history, exports
+                     ├─ "Next batch" ──▶ SelectionStrategy picks next N (seen items never return)
+                     │
+                     └─ enough Yes ──▶ [Exporter] ──▶ JSON download
 ```
 
 ---
 
 ## Module Specifications
 
+| # | Module | Env var | Interface |
+|---|--------|---------|-----------|
+| 1 | QueryGeneration | `QUERY_GENERATION` | `convert(nl_query, context) -> str` |
+| 2 | ConceptMatcher | `CONCEPT_MATCHER` | `match(nl_query) -> list[dict]` (used inside `concept_query`) |
+| 3 | KnowledgeBase | `KNOWLEDGE_BASE` | `execute(sparql) -> list[dict]` |
+| — | ArtifactFetcher | `ARTIFACT_FIELDS_FILE` | `fetch(ids) -> list[Artifact]` (infrastructure, configured per graph) |
+| 4 | SelectionStrategy | `SELECTION` | `select(pool, n, history) -> list[dict]` |
+| 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
+| 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
+| 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
+
+All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`).
+
 ### 1. QueryGeneration
 
-Converts user input into a valid SPARQL string for the target graph.
+Converts user input into a SPARQL **find** query for the target graph. This is the module `app.py` talks to on `/search`. It only decides *which* artifacts match; their metadata is fetched afterwards by the ArtifactFetcher, so query generators never deal with display fields.
 
 | | |
 |--|--|
-| **Input** | `nl_query: str` — the user's input (a category selection, keywords, or free text) |
-| | `context: dict` — graph-specific hints passed from config: known entity URIs, ontology prefixes, SPARQL templates, domain vocabulary, RDF schema snippets |
-| **Output** | `str` — a valid SPARQL SELECT query |
+| **Input** | `nl_query: str` — the user's input (a category selection or free text) |
+| | `context: dict` — optional per-call overrides, e.g. `context["sparql_template"]` |
+| **Output** | `str` — a SPARQL `SELECT DISTINCT ?artifact` query; the `?artifact` column must hold artifact URIs, and `LIMIT` therefore counts artifacts |
 
 ```python
 class QueryGeneration(ABC):
-    def convert(self, nl_query: str, context: dict) -> str: ...
+    def convert(self, nl_query: str, context: dict) -> str: ...          # abstract
+    def get_categories(self) -> list[str]: ...                           # button labels; default []
+    def match_concepts(self, nl_query: str) -> list[dict]: ...           # concepts for the UI; default []
+    def get_query_features(self, nl_query: str) -> dict[str, str]: ...   # pinned features; default {}
 ```
 
-**Skeleton implementations (both shipped):**
+**Implementations (both shipped):**
 
 | Name | Key | How it works |
 |------|-----|-------------|
-| `CategorySelect` | `category_select` | UI presents a fixed list of choices from `context["categories"]`. User picks one → known URI → substituted into a SPARQL template. No text input. |
-| `KeywordMatching` | `keyword_matching` | UI shows a free-text box. Words are matched against a thesaurus (CSV: concept, prefLabel, broad, altLabels). Matched URIs are collapsed to coherent superconcepts and injected into a `VALUES`-based SPARQL template. Thesaurus files configured via `KEYWORD_MATCHING_THESAURUS_FILES`. Each matched concept's position in the `skos:broader*` hierarchy is used to name the feature it constrains: `Objecttrefwoord` → `typeLabel`, `Culturele Herkomst` → `herkomst`, `Geografische Herkomst` → `herkomst`, `Materiaal en techniek` → `materiaal`. These labelled features are returned by `get_query_features()` as the pinned feature dict passed to the `RetrievalEvaluator`. Requires `SPARQL_ENDPOINT_URL`; without it, all concepts fall back to `typeLabel`. |
+| `CategorySelect` | `category_select` | UI presents a fixed list of category buttons (`CATEGORIES_FILE` overrides the defaults). User picks one → known URI → substituted into a find-query template (that type or any sub-type, with an image). No text input, no concept matching, no query features. |
+| `ConceptQuery` | `concept_query` | UI shows a free-text box. Delegates text → concepts to the configured **ConceptMatcher** (§2), then only builds SPARQL: URIs are grouped by `feature` and each group becomes one required `VALUES` + `skos:narrower*` block (AND across features, OR within one). The outer template keeps only artifacts with an image and returns their URIs. The matcher runs once per query string; `match_concepts`, `get_query_features` and `convert` reuse the cached result (the cache is read into a local first, so concurrent requests can't swap concepts). `keyword_matching` is a legacy alias key. |
 
-Future swap-in: LLM-based (`llm`) that uses `context["schema_snippet"]` to prompt a model.
+**Why the split.** Before, one `KeywordMatching` module both matched text to thesaurus concepts and filled the SPARQL template. Now *which concepts the user meant* (ConceptMatcher) is separate from *what to fetch for them* (ConceptQuery), so a new matcher (embeddings, an LLM) reuses the same templates, and template changes don't touch matching. ConceptQuery receives its matcher by constructor injection from `config.py`; `app.py` is unaware of the matcher.
 
 #### Shared feature schema
 
-The SPARQL `SELECT` clause is designed so that the variable names it returns match exactly the keys produced by `get_query_features()`:
+Feature names are **Artifact field names**. A ConceptMatcher tags each concept with one of them, `get_query_features()` returns `{feature: [labels]}` with those keys, and every pool item's `properties` (an Artifact dict) has a field of the same name:
 
-| Feature key | SPARQL variable | What it captures |
-|-------------|-----------------|-----------------|
-| `typeLabel` | `?typeLabel` | Object type (e.g. `maskers (kleding)`) |
-| `materiaal` | `?materiaal` | Material / technique |
-| `herkomst`  | `?herkomst`  | Cultural or geographic origin |
+| Feature | Find-query anchor (in `concept_query`) | Artifact field |
+|---------|----------------------------------------|----------------|
+| `type` | `?artifact crm:P2_has_type` | `type: list[str]` |
+| `material` | `?artifact crm:P45_consists_of` | `material: list[str]` |
+| `place` | `?artifact crm:P108i_was_produced_by/crm:P7_took_place_at` | `place: list[str]` |
 
-This means **query features and item features share the same key vocabulary**. A query feature `{"typeLabel": "maskers (kleding)"}` is directly comparable to the `typeLabel` field in every pool item's `properties` dict — enabling the `RetrievalEvaluator` to measure surprise (distance from the query anchor) without any key translation.
+So a query feature `{"type": ["maskers (kleding)"]}` is directly comparable to `properties["type"]` of every item — enabling the `RetrievalEvaluator` to measure surprise (distance from the query anchor) without any key translation.
 
 `get_query_features()` returns `{}` on implementations that don't produce typed concept matches (e.g. `CategorySelect`), in which case the evaluator treats the query as unpinned and reports only diversity.
 
 ---
 
-### 2. KnowledgeBase
+### 2. ConceptMatcher
+
+Maps free text to concepts in the collection's vocabulary. Knows nothing about SPARQL templates. Used by `ConceptQuery`; selected with `CONCEPT_MATCHER`.
+
+| | |
+|--|--|
+| **Input** | `nl_query: str` — free text typed by the user |
+| **Output** | `list[dict]` — one entry per concept: `{"uri": str, "label": str \| None, "feature": str}` |
+
+- `uri` — concept URI to anchor the query on.
+- `label` — human-readable label, or `None` when the URI is outside the vocabulary (e.g. an ancestor reached by generalisation). Unlabelled concepts are still queried but not shown in the UI or used as query features.
+- `feature` — which item feature the concept constrains, from the shared feature schema above.
+
+```python
+class ConceptMatcher(ABC):
+    def match(self, nl_query: str) -> list[dict]: ...
+```
+
+**Implementations:**
+
+| Name | Key | How it works |
+|------|-----|-------------|
+| `ThesaurusMatcher` | `thesaurus` | Words (minus filler words) are substring-matched against thesaurus labels (CSV: concept, prefLabel, broad, altLabels; files via `KEYWORD_MATCHING_THESAURUS_FILES`). Each word's matches are collapsed to coherent superconcepts by walking the `broad` column up while two or more matches share a parent. Each concept's top-level `skos:broader*` ancestor, looked up on `SPARQL_ENDPOINT_URL` and cached, names its feature: `Objecttrefwoord` → `type`, `Culturele Herkomst` / `Geografische Herkomst` → `place`, `Materiaal en techniek` → `material`. Without an endpoint every concept falls back to `type`. |
+
+Known limitations of `thesaurus` (to fix inside the matcher): substring matching is noisy (`houten` hits unrelated tool concepts), matches whose parent is not shared are dropped during collapsing, and collapsing can climb close to a tree root.
+
+Future swap-ins: embedding-based matching over thesaurus labels; LLM-based matching that maps text to URIs + features.
+
+---
+
+### 3. KnowledgeBase
 
 Executes a SPARQL query against a knowledge graph and returns raw results. The caller never needs to know whether the graph is remote or local.
 
@@ -94,7 +145,37 @@ class KnowledgeBase(ABC):
 
 ---
 
-### 3. SelectionStrategy
+#### ArtifactFetcher (infrastructure on top of the KnowledgeBase)
+
+Turns the artifact URIs from the find query into `Artifact` objects (see *Artifact Schema* below). Not a pluggable module type: the mechanism is generic, and what is graph-specific — how each field is reached in the graph — is configuration in a JSON file (`ARTIFACT_FIELDS_FILE`, default `collections/wereld_museum/artifact_fields.json`):
+
+```json
+{
+  "prefixes": { "crm": "http://www.cidoc-crm.org/cidoc-crm/", "...": "..." },
+  "fields": {
+    "title":    "?artifact dct:title ?value .",
+    "material": "?artifact crm:P45_consists_of/skos:prefLabel ?value .",
+    "place":    "?artifact crm:P108i_was_produced_by/crm:P7_took_place_at/skos:prefLabel ?value ."
+  }
+}
+```
+
+Each pattern binds `?value` for `?artifact`. The fetcher builds one query per batch of 100 URIs with one `UNION` branch per field, so every row is a single `(artifact, field, value)` triple — multi-valued fields never multiply each other and nothing is concatenated:
+
+```sparql
+SELECT ?artifact ?field ?value WHERE {
+  VALUES ?artifact { <uri1> <uri2> … }
+  { ?artifact dct:title ?value . BIND("title" AS ?field) }
+  UNION { ?artifact crm:P45_consists_of/skos:prefLabel ?value . BIND("material" AS ?field) }
+  UNION …
+}
+```
+
+Rows are folded into `{field: [values]}` and then into `Artifact.from_values()`. Field names in the file must be Artifact fields (checked at startup); Artifact fields missing from the file stay empty. Labels use `skos:prefLabel` (one Dutch label per concept), not `skos:altLabel` (mixed-language synonyms).
+
+---
+
+### 4. SelectionStrategy
 
 Picks which N items to show the user from the remaining pool, using feedback history.
 
@@ -115,7 +196,71 @@ The random baseline filters `seen` items, then `random.sample(remaining, n)`. A 
 
 ---
 
-### 4. Exporter
+### 5. RetrievalEvaluator (optional)
+
+Scores the whole retrieved pool on two separate axes. Enabled by setting `RETRIEVAL_EVALUATOR`; when unset, `/search` returns `metrics: null` and the embedding model is never loaded.
+
+| | |
+|--|--|
+| **Input** | `pool: list[dict]` — normalised pool items |
+| | `query: dict` — pinned features from `QueryGeneration.get_query_features()`; `{}` means all features free |
+| **Output** | `{"diversity": float, "surprise": float}` |
+
+```python
+class RetrievalEvaluator(ABC):
+    def score(self, pool: list[dict], query: dict) -> dict: ...
+```
+
+`DiversityEvaluator` (key `diversity`) is composed of two sub-modules (`modules/retrieval_evaluator/base.py`):
+
+- `FeatureEncoder` — `MultilingualFeatureEncoder` turns feature values into vectors.
+- `MetricsCalculator` — `EntropyDiversityCalculator` turns those vectors into the two scores.
+
+#### How the metrics are calculated
+
+**Step 1 — features per item.** Each pool item's `properties` (its Artifact fields) minus non-semantic keys (`id`, `images`, `inventory_number`, `dimensions`, and the long `description`). What remains is typically `title`, `type`, `material`, `place`, `date`, `maker`, `intended_use`, `acquisition`, `acquired_from`; empty fields are dropped.
+
+**Step 2 — encode.** Every text value is embedded with a multilingual sentence-transformer (`EMBEDDING_MODEL`, default `paraphrase-multilingual-mpnet-base-v2`) into an L2-normalised vector, so `cosine_distance(a, b) = 1 − a·b` (0 = same meaning, larger = more different). A list field (e.g. `material: ["hout", "kleurstof"]`) becomes the re-normalised **mean** of its values' vectors — one vector sitting between its values. A single value that parses as a number becomes a float. The pinned query features (`{"type": ["maskers (kleding)"]}`) are encoded the same way. Embeddings are cached per text for the server's lifetime.
+
+**Step 3 — split features.** *Pinned* = the features the query constrained (keys of `get_query_features()`); *free* = every other feature present on any item. Pinned features feed only surprise; free features feed only diversity.
+
+**Diversity** — "how varied is the pool where the user left it open?"
+
+```
+for each free feature f:
+    V_f = vectors of the items that have f            (skip f if fewer than 2)
+    diversity_f = mean over all pairs (i, j) in V_f of (1 − v_i · v_j)
+diversity = unweighted mean of diversity_f over free features
+```
+
+Numeric features use mean pairwise `|a − b|` instead. If a feature mixes numbers and text across items (e.g. a title that is just a number), the minority kind is ignored. Range: roughly 0 (all items alike) upward; with sentence embeddings, values cluster in a narrow middle band (~0.2–0.5), so compare pools against each other rather than reading the number absolutely.
+
+**Surprise** — "how unevenly do items deviate from what was searched?"
+
+```
+k = number of pinned features (0 → surprise = 0)
+for each item:
+    d(item) = number of pinned features f where the item has f
+              and cosine_distance(query_f, item_f) > τ_f        (τ_f = 0.30 by default)
+p(d) = fraction of the pool with deviation count d,  d ∈ {0 … k}
+H = −Σ_d p(d) · ln p(d)
+surprise = H / ln(k + 1)                                 (normalised to 0 … 1)
+```
+
+Worked example: two pinned features (type, place), 100 items; 60 match both (d = 0), 30 deviate on one (d = 1), 10 on both (d = 2). Then `H = −(0.6 ln 0.6 + 0.3 ln 0.3 + 0.1 ln 0.1) = 0.898` and `surprise = 0.898 / ln 3 = 0.817`.
+
+Things to know when reading the number:
+
+- **Entropy measures spread, not amount.** A pool where *every* item deviates on everything also scores 0 — all items share the same `d`. High surprise means the pool mixes close matches with deviations.
+- **Today it measures label mismatch, not real deviation.** The find query requires every pinned feature, so every item truly has the searched concept (or a narrower one). A non-zero surprise therefore comes from the *embedding* comparison: an item whose label for that feature differs in wording from the searched label, or which has extra values that pull its mean vector away. Example: searching `hout` is turned into the concept "hout naar samenstelling of herkomst"; items labelled `["hout", "hardhout"]` sit at distance 0.32–0.40 from that long label, so 97 of 100 count as deviating and surprise is 0.19. Surprise becomes a real "challenges your search" signal once relaxed retrieval (drop one pinned constraint at a time, see the diversity design doc) adds near-miss candidates.
+- **Items missing a pinned feature count as non-deviating** on it.
+- **Both scores describe the whole pool** (up to 100 objects), not the batch on screen.
+
+The method and its rationale are in `modules/retrieval_evaluator/diversity_recommender_design.md`.
+
+---
+
+### 6. Exporter
 
 Serialises the final selection into a downloadable file.
 
@@ -132,7 +277,7 @@ class Exporter(ABC):
 
 ---
 
-### 5. RunLogger
+### 7. RunLogger
 
 Records every curation event to a **JSON Lines** file (one JSON object per line) and/or stdout. This is not a pluggable processing step — it is infrastructure that observes the pipeline without influencing it.
 
@@ -162,14 +307,18 @@ Configuration lives in two files:
 
 **`.env`** (not committed, copied from `.env.example`):
 ```ini
-QUERY_GENERATION=category_select
+QUERY_GENERATION=category_select   # category_select | concept_query
+CONCEPT_MATCHER=thesaurus          # used by concept_query
 KNOWLEDGE_BASE=sparql_endpoint
 SELECTION=random
 EXPORTER=json
+RETRIEVAL_EVALUATOR=               # diversity | blank = off
+ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json
 
-# KnowledgeBase settings (only the relevant ones are used)
+# Module settings (only the relevant ones are used)
 SPARQL_ENDPOINT_URL=https://api.colonialcollections.nl/datasets/nmvw/collection-archives/sparql
 RDF_FILE_PATH=
+KEYWORD_MATCHING_THESAURUS_FILES=collections/wereld_museum/thesaurus1.csv,...
 ```
 
 **`config.py`** reads `.env` and resolves each key to a concrete class:
@@ -178,7 +327,11 @@ RDF_FILE_PATH=
 REGISTRY = {
     "query_generation": {
         "category_select":  "modules.query_generation.category_select.CategorySelect",
-        "keyword_matching": "modules.query_generation.keyword_matching.KeywordMatching",
+        "concept_query":    "modules.query_generation.concept_query.ConceptQuery",
+        "keyword_matching": "modules.query_generation.concept_query.ConceptQuery",  # legacy alias
+    },
+    "concept_matcher": {
+        "thesaurus": "modules.concept_matching.thesaurus_matcher.ThesaurusMatcher",
     },
     "knowledge_base": {
         "sparql_endpoint": "modules.knowledge_base.sparql_endpoint.SPARQLEndpoint",
@@ -190,29 +343,66 @@ REGISTRY = {
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
     },
+    "retrieval_evaluator": {
+        "diversity": "modules.retrieval_evaluator.diversity_evaluator.DiversityEvaluator",
+    },
 }
 ```
 
-Adding a new implementation = add one registry entry + set the env var. No other files change.
+Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator.
+
+Adding a new implementation = add one registry entry + set the env var (plus a `_build_*` branch if it needs constructor args). No other files change.
 
 ---
 
-## Pool Item Schema (internal)
+## Artifact Schema (internal)
+
+`modules/artifact.py` defines one dataclass that every search result is turned into, whatever the graph. Each field's type decides whether it is single- or multi-valued; missing data is `None` or `[]`, so **every artifact always has every key**.
+
+| Field | Type | Wereld Museum source (`artifact_fields.json`) |
+|-------|------|-----------------------------------------------|
+| `id` | `str` | artifact URI |
+| `title` | `str \| None` | `dct:title` |
+| `inventory_number` | `str \| None` | identifier labelled "Identification number" |
+| `intended_use` | `str \| None` | `P103_was_intended_for` |
+| `dimensions` | `str \| None` | `P43_has_dimension` label |
+| `type` | `list[str]` | `P2_has_type` prefLabel |
+| `material` | `list[str]` | `P45_consists_of` prefLabel |
+| `place` | `list[str]` | production `P7_took_place_at` prefLabel |
+| `date` | `list[str]` | production label (free text, e.g. "ca. 1900"; the role label "Maker" is filtered out) |
+| `maker` | `list[str]` | production `P14_carried_out_by` label |
+| `description` | `list[str]` | text labelled "Description" |
+| `acquisition` | `list[str]` | acquisition event label (e.g. "Schenking") |
+| `acquired_from` | `list[str]` | acquisition `P23_transferred_title_from` label |
+| `images` | `list[str]` | `P65 / digitally_shown_by / access_point` |
+
+Pool items wrap an artifact for the UI and the selection loop:
 
 ```json
 {
-  "id": "https://hdl.handle.net/.../artifact123",
-  "title": "Funeral mask",
+  "id": "https://hdl.handle.net/20.500.11840/102545",
+  "title": "HOUTEN MASKER VOOR DE GOLI DANS",
   "score": 1.0,
   "properties": {
-    "url_photo": "...",
-    "specificType": "...",
-    "any_other_sparql_field": "..."
+    "id": "https://hdl.handle.net/20.500.11840/102545",
+    "title": "HOUTEN MASKER VOOR DE GOLI DANS",
+    "inventory_number": "TM-3305-18",
+    "intended_use": "Masker",
+    "dimensions": "58,5 × 44 × 5,5cm",
+    "type": ["maskers (kleding)"],
+    "material": ["kleurstof", "hout"],
+    "place": ["Ivoorkust"],
+    "date": ["voor 1963"],
+    "maker": [],
+    "description": ["Het masker danst tijdens de Goli, …"],
+    "acquisition": ["Verwerving: aankoop", "Aankoop"],
+    "acquired_from": ["A.P. (André) Schaller"],
+    "images": ["https://…/TM-3305-18.jpg", "https://…"]
   }
 }
 ```
 
-`score` is internal. All SPARQL-returned fields land in `properties` verbatim. `score` is stripped on export.
+`properties` is `Artifact.to_dict()`. `title` is repeated at the top level (`"Untitled"` when missing) for display. Images already known to be placeholders are removed; artifacts left without images are dropped. `score` is internal and stripped on export.
 
 ---
 
@@ -229,11 +419,53 @@ Adding a new implementation = add one registry entry + set the env var. No other
     {
       "id": "...",
       "title": "...",
-      "properties": { "url_photo": "...", "specificType": "...", ... }
+      "properties": { "id": "...", "title": "...", "type": ["..."], "material": ["..."], "images": ["..."], ... }
     }
   ]
 }
 ```
+
+---
+
+## Curation UI (`templates/index.html`)
+
+A single page; all state (pool, history, selection) lives in the browser.
+
+```
+┌ Search ─ keyword box (concept_query) or category buttons (category_select) ┐
+├ Concepts: chips for each matched concept (link to its URI)                 ┤
+├ Pool section ──────────────────────────────────────────────────────────────┤
+│  EXPLORING  100 objects            ← total pool size, fixed per search     │
+│  DIVERSITY 0.320  SURPRISE 0.000   ← only when RETRIEVAL_EVALUATOR is set  │
+│ ┌ In this pool ┐ ┌ cards (N per batch: thumbnail + title + Keep) ────────┐ │
+│ │ TYPE         │ │                                                       │ │
+│ │  [searched]  │ │                                                       │ │
+│ │ MATERIAL  ▾  │ │                                                       │ │
+│ │ PLACE     ▾  │ ├───────────────────────────────────────────────────────┤ │
+│ └──────────────┘ │ BATCH 3 / 10   ← Previous   Next batch →              │ │
+│                  └───────────────────────────────────────────────────────┘ │
+├ Selection: kept items → Export / Build Exhibition                          ┤
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Feature sidebar ("In this pool").** One block per main feature — `type`, `material`, `place` (the shared feature schema; `MAIN_FEATURES` in the page script):
+
+- A feature the query **searched on** (some concept in `/search`'s `concepts` has that `feature`) shows the searched labels as fixed chips marked *searched*.
+- Every **other** feature is a collapsible list: the summary shows the most common value and the number of distinct values; expanded, it lists every value with its count and a bar, most common first, plus *not recorded* for objects without that field.
+- Counts are computed in the browser from the pool's Artifact dicts: each object counts **once per distinct value**, so an object with two materials counts for both and totals can exceed the pool size. Counts cover the **whole pool**, not the visible batch, so they don't change when paging.
+- In category mode no concepts are returned, so all three features are lists. Multi-category searches are merged in the browser first, so the counts cover the merged pool.
+
+**Batching.** `/search` returns the first `N` cards (`N_PER_BATCH`, default 9); *Next batch* asks `/next` for `N` unseen ones (pure in-memory selection, ~1 ms — no SPARQL). The bottom-left indicator shows `Batch i / ⌈pool / N⌉`. *Previous* / *Forward* re-show earlier batches from browser history without calling the server.
+
+**Card grid.** `layoutGrid()` picks the column count so a batch fills balanced rows: all `N` cards in one row when the grid is wide enough (cards ≥ 96 px), otherwise the fewest rows with near-equal columns (9 → 5 + 4, or 3 × 3). It re-runs on resize.
+
+**Images: thumbnails, placeholders, preloading.** The museum's image proxy only serves full-size originals (often 0.5–3 MB, no resize parameters), which made paging slow. Cards therefore load `/thumb?url=<original>` instead (see *ImageCache* below), ~20–40 KB each. After the first batch renders, the page preloads the thumbnails of the whole pool in the background (4 at a time; a new search cancels the previous preload), so every later batch shows instantly. If an image is the collection's "image not available" placeholder, `/thumb` answers 404 and the card falls through to the object's next image; only when every image is a placeholder does it show a neutral *no image* box.
+
+---
+
+### ImageCache (`modules/image_cache.py`)
+
+Infrastructure behind `/thumb`. On the first request for an image URL it downloads the original once, shrinks it to a JPEG thumbnail (`THUMBNAIL_SIZE`, default 480 px longest side) and stores it under `THUMBNAIL_CACHE_DIR` (default `.cache/thumbnails/`, gitignored) as `<sha1(url)>.jpg`; later requests are served from disk in ~2 ms, across server restarts. The same download is compared (perceptual average hash, Hamming distance ≤ 5) with `PLACEHOLDER_IMAGE_FILE`; a match is recorded as `<sha1(url)>.placeholder` and the image is never shown. `_build_pool` drops images already known to be placeholders, and artifacts left with no image at all. A per-URL lock makes concurrent requests download an image only once. Only `http(s)` URLs on `IMAGE_HOSTS` (default `collectie.wereldculturen.nl`) are fetched, so `/thumb` is not an open proxy.
 
 ---
 
@@ -244,9 +476,10 @@ Adding a new implementation = add one registry entry + set the env var. No other
 | Method | Path | Request body | Response |
 |--------|------|-------------|----------|
 | `GET` | `/` | — | Serves `index.html` |
-| `POST` | `/search` | `{ query: str, n: int }` | `{ sparql: str, pool: [...], displayed: [...] }` |
+| `POST` | `/search` | `{ query: str, n: int }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
 | `POST` | `/next` | `{ pool: [...], n: int, history: {...} }` | `{ displayed: [...], pool: [...] }` |
 | `POST` | `/export` | `{ items: [...], meta: {...} }` | JSON file download |
+| `GET` | `/thumb?url=…` | — | Cached JPEG thumbnail; `404` if the image is a placeholder, `403` if the host is not allowed, `502` if it can't be fetched |
 
 ---
 
@@ -256,11 +489,17 @@ Adding a new implementation = add one registry entry + set the env var. No other
 museum_curation/
 ├── modules/
 │   ├── base.py                          # ABCs + SelectionHistory dataclass
+│   ├── artifact.py                      # Artifact dataclass — the fixed object schema
+│   ├── artifact_fetcher.py              # artifact URIs → Artifact objects (fetch query)
+│   ├── image_cache.py                   # /thumb: cached thumbnails + placeholder detection
 │   ├── run_logger.py                    # RunLogger — append-only JSON Lines event log
 │   ├── query_generation/
 │   │   ├── _stub.py                     # copy-paste template for new impls
 │   │   ├── category_select.py           # baseline: fixed category buttons
-│   │   └── keyword_matching.py          # keyword → concept URI matching (WIP)
+│   │   └── concept_query.py             # matched concepts → SPARQL (VALUES + narrower*)
+│   ├── concept_matching/
+│   │   ├── _stub.py
+│   │   └── thesaurus_matcher.py         # text → concept URIs via thesaurus CSVs
 │   ├── knowledge_base/
 │   │   ├── _stub.py
 │   │   ├── sparql_endpoint.py           # remote HTTP endpoint via SPARQLWrapper
@@ -268,12 +507,24 @@ museum_curation/
 │   ├── selection/
 │   │   ├── _stub.py
 │   │   └── random_strategy.py           # random.sample(unseen, n)
-│   └── exporter/
+│   ├── retrieval_evaluator/
+│   │   ├── _stub.py
+│   │   ├── base.py                      # FeatureEncoder + MetricsCalculator ABCs
+│   │   ├── diversity_evaluator.py       # DiversityEvaluator (+ CLI)
+│   │   ├── feature_encoder.py           # multilingual sentence-transformer encoder
+│   │   ├── metrics_calculator.py        # diversity + surprise
+│   │   └── diversity_recommender_design.md
+│   ├── exporter/
+│   │   ├── _stub.py
+│   │   └── json_exporter.py
+│   └── exhibition_builder/              # downstream consumer of the export (skeleton)
 │       ├── _stub.py
-│       └── json_exporter.py
+│       └── digital_wall.py
 ├── collections/
 │   └── wereld_museum/                   # graph-specific utility space
 │       ├── wereldmuseum_categories.json # label → concept URI mapping (optional override)
+│       ├── thesaurus1-3.csv             # vocabulary for the thesaurus ConceptMatcher
+│       ├── artifact_fields.json         # Artifact field → SPARQL pattern for this graph
 │       └── notavailable.jpg             # reference placeholder image for perceptual hash filter
 ├── config.py                            # module registry, reads from .env
 ├── .env                                 # not committed
@@ -282,6 +533,7 @@ museum_curation/
 ├── templates/
 │   └── index.html
 ├── requirements.txt
+├── .cache/thumbnails/                 # gitignored; written by ImageCache
 └── runs.log                             # gitignored; written by RunLogger
 ```
 
@@ -317,12 +569,16 @@ Each graph (knowledge base) that the tool connects to gets its own subfolder und
 collections/
 └── wereld_museum/
     ├── wereldmuseum_categories.json   # label → concept URI mapping
+    ├── thesaurus1-3.csv               # concept vocabulary (concept, prefLabel, broad, altLabels)
+    ├── artifact_fields.json           # how each Artifact field is read from this graph
     └── notavailable.jpg               # reference "image not available" placeholder
 ```
 
 **What belongs here:**
 - Category / concept URI mappings (`CATEGORIES_FILE` env var)
-- Placeholder / dummy images (`PLACEHOLDER_IMAGE_FILE` — perceptual hash comparison via imagehash + Pillow; each URL fetched once and cached for the server lifetime)
+- Thesaurus vocabularies for concept matching (`KEYWORD_MATCHING_THESAURUS_FILES`)
+- The Artifact field mapping (`ARTIFACT_FIELDS_FILE`)
+- Placeholder / dummy images (`PLACEHOLDER_IMAGE_FILE` — perceptual hash comparison via imagehash + Pillow, done by ImageCache when a thumbnail is first made; results persist in `THUMBNAIL_CACHE_DIR`)
 - Future: schema snippets for LLM prompts, local RDF dumps, domain vocabulary files
 
 **How it's used:**
@@ -336,7 +592,8 @@ Switching to a different graph = create a new `collections/<graph>/` folder, poi
 
 ## Out of Scope (for now)
 
-- LLM-based QueryGeneration (interface + context dict ready, impl deferred)
+- LLM- or embedding-based ConceptMatcher (interface ready, impl deferred)
+- Relaxed retrieval and MMR-style diversity-aware selection (see the diversity design doc)
 - Scored / active-learning SelectionStrategy (interface + score field ready, impl deferred)
 - Object validation
 - User accounts or persistent sessions

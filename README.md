@@ -26,10 +26,21 @@ Open `http://127.0.0.1:5000`.
 All module selection is done via `.env`. Copy `.env.example` to `.env` and set:
 
 ```ini
-QUERY_GENERATION=category_select  # category_select | keyword_matching
+QUERY_GENERATION=category_select  # category_select | concept_query
+CONCEPT_MATCHER=thesaurus         # thesaurus (used by concept_query)
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
 SELECTION=random                  # random
 EXPORTER=json                     # json
+RETRIEVAL_EVALUATOR=              # diversity | blank = off
+```
+
+### Search results
+
+Every search runs two SPARQL queries. The query generator's *find* query returns matching artifact URIs (at most 100 artifacts). The artifact fetcher then reads the same fields for each one into an `Artifact` (see `modules/artifact.py`): title, type, material, place, date, maker, description, acquisition, images and more. Multi-valued fields are lists.
+
+How each field is read from the graph is configured in a JSON file:
+```ini
+ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json   # default
 ```
 
 ### Knowledge base
@@ -44,9 +55,15 @@ EXPORTER=json                     # json
 | Key | How it works |
 |-----|-------------|
 | `category_select` | Buttons with predefined categories; no text input |
-| `keyword_matching` | Free-text box; matches words against thesaurus concepts and pins type, material and origin in the SPARQL query |
+| `concept_query` | Free-text box; a concept matcher maps the text to concept URIs, which are pinned as type, material and origin in the SPARQL query. `keyword_matching` still works as an alias. |
 
-`keyword_matching` needs one or more thesaurus CSV files:
+### Concept matcher (used by `concept_query`)
+
+| Key | How it works |
+|-----|-------------|
+| `thesaurus` | Substring-matches words against thesaurus labels and collapses matches to shared parent concepts |
+
+`thesaurus` needs one or more thesaurus CSV files:
 ```ini
 KEYWORD_MATCHING_THESAURUS_FILES=collections/wereld_museum/thesaurus1.csv,collections/wereld_museum/thesaurus2.csv,collections/wereld_museum/thesaurus3.csv
 ```
@@ -70,10 +87,16 @@ app.py              Flask app — thin orchestration layer
 config.py           Module registry and wiring; reads .env
 modules/
   base.py           ABCs and SelectionHistory dataclass
+  artifact.py       Artifact dataclass — fixed fields for every search result
+  artifact_fetcher.py  Fetches Artifact fields for found artifact URIs
+  image_cache.py    Cached card thumbnails (/thumb) + placeholder detection
   query_generation/ Query generation implementations
+  concept_matching/ Text → concept URI matchers used by concept_query
   knowledge_base/   SPARQL execution backends
   selection/        Item selection strategies
+  retrieval_evaluator/ Optional pool diversity / surprise metrics
   exporter/         Export formats
+  exhibition_builder/ Downstream exhibition layouts (skeleton)
 templates/
   index.html        Single-page curation UI
 .env.example        Documents all environment variables

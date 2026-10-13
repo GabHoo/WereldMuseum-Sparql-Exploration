@@ -1,11 +1,13 @@
 """
 MultilingualFeatureEncoder — encodes any {key: value} feature dict.
 
-Accepts a plain dict of feature values (strings or numbers) and returns an
-encoded dict of the same keys with values replaced by:
-  - np.ndarray (L2-normalised, float32) for text values
-  - float for numeric values (detected by trying float(v))
-  - key omitted if value is None / empty string
+Accepts a dict of feature values and returns an encoded dict of the same keys:
+  - text value          → np.ndarray (L2-normalised, float32)
+  - list of text values → mean of the values' embeddings, re-normalised, so a
+                          multi-valued field (e.g. two materials) is one vector
+                          that sits between its values
+  - numeric value       → float (detected by trying float(v))
+  - None / "" / []      → key omitted
 
 Model: paraphrase-multilingual-mpnet-base-v2
   Works on Dutch and 50+ languages. L2-normalised output means
@@ -37,12 +39,12 @@ class MultilingualFeatureEncoder(FeatureEncoder):
 
     Both query and item features are plain {key: value} dicts.
     The encoder returns a dict with the same keys; values become:
-      - np.ndarray for text
+      - np.ndarray for text, and for lists of text (mean of the embeddings)
       - float for numeric
-      - key absent for None / empty string
+      - key absent for None / empty string / empty list
 
     An internal text cache deduplicates embeddings across calls so that
-    repeated label values (e.g. many items with the same typeLabel) are
+    repeated label values (e.g. many items with the same type) are
     only embedded once per server lifetime.
     """
 
@@ -65,56 +67,43 @@ class MultilingualFeatureEncoder(FeatureEncoder):
         Batch-encode a list of feature dicts (already extracted from pool items).
         Collects all unique text values across the list and embeds them in one call.
         """
-        # Collect unseen text values from all items
-        unseen: list[str] = []
-        for feat_dict in items:
-            for v in feat_dict.values():
-                if isinstance(v, str) and v and not _is_numeric(v) and v not in self._text_cache:
-                    unseen.append(v)
-
-        unique_unseen = list(dict.fromkeys(unseen))
-        if unique_unseen:
-            vecs = self._model.encode(
-                unique_unseen,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
-            for text, vec in zip(unique_unseen, vecs):
-                self._text_cache[text] = vec
-
+        texts = [t for fd in items for v in fd.values() for t in self._texts_of(v)]
+        self._embed_missing(texts)
         return [self._encode_dict(fd) for fd in items]
 
     # ── Private ───────────────────────────────────────────────────────────────
 
-    def _encode_dict(self, feat_dict: dict) -> dict:
-        result = {}
-        texts_to_embed: list[str] = []
+    @staticmethod
+    def _texts_of(v) -> list[str]:
+        """Text values inside v that need an embedding (numbers excluded)."""
+        if isinstance(v, str):
+            return [v] if v and not _is_numeric(v) else []
+        if isinstance(v, list):
+            return [x for x in v if isinstance(x, str) and x]
+        return []
 
+    def _embed_missing(self, texts: list[str]) -> None:
+        unique = [t for t in dict.fromkeys(texts) if t not in self._text_cache]
+        if not unique:
+            return
+        vecs = self._model.encode(unique, normalize_embeddings=True, show_progress_bar=False)
+        for text, vec in zip(unique, vecs):
+            self._text_cache[text] = vec
+
+    def _encode_dict(self, feat_dict: dict) -> dict:
+        self._embed_missing([t for v in feat_dict.values() for t in self._texts_of(v)])
+        result = {}
         for k, v in feat_dict.items():
-            if v is None or v == "":
+            if v is None or v == "" or v == []:
                 continue
-            if _is_numeric(v):
+            if isinstance(v, list):
+                vecs = [self._text_cache[t] for t in self._texts_of(v)]
+                if vecs:
+                    mean = np.mean(vecs, axis=0)
+                    norm = np.linalg.norm(mean)
+                    result[k] = (mean / norm if norm > 0 else mean).astype(np.float32)
+            elif _is_numeric(v):
                 result[k] = float(v)
             elif isinstance(v, str):
-                if v in self._text_cache:
-                    result[k] = self._text_cache[v]
-                else:
-                    texts_to_embed.append(v)
-                    result[k] = v  # placeholder, replaced below
-
-        if texts_to_embed:
-            unique = list(dict.fromkeys(texts_to_embed))
-            vecs = self._model.encode(
-                unique,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
-            for text, vec in zip(unique, vecs):
-                self._text_cache[text] = vec
-            # Replace placeholders
-            result = {
-                k: (self._text_cache[v] if isinstance(v, str) and v in self._text_cache else v)
-                for k, v in result.items()
-            }
-
+                result[k] = self._text_cache[v]
         return result

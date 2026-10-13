@@ -231,10 +231,108 @@
       font-weight: 600;
     }
 
+    /* ── Pool body: feature sidebar (left) + cards (right) ──────────────── */
+    #pool-body {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    #pool-main { min-width: 0; }
+    @media (max-width: 760px) {
+      #pool-body { grid-template-columns: minmax(0, 1fr); }
+    }
+
+    /* ── Feature stats sidebar (type / material / place over the pool) ─── */
+    #feature-stats {
+      background: rgba(250, 247, 242, 0.55);
+      border: 1px solid #d4c8aa;
+      padding: 12px 12px 10px;
+      font-size: 0.7rem;
+    }
+    .fstat-title {
+      color: var(--text-muted);
+      font-size: 0.58rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .fstat { padding: 8px 0; border-top: 1px solid #e0d6c0; }
+    .fstat-title + .fstat { border-top: none; padding-top: 0; }
+    .fstat-label {
+      display: block;
+      color: var(--text-muted);
+      font-size: 0.6rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    .fstat-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+    .fstat-fixed {
+      background: rgba(160, 120, 40, 0.1);
+      border: 1px solid #c4a85a;
+      border-radius: 11px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.66rem;
+      padding: 1px 8px;
+      overflow-wrap: anywhere;
+    }
+    .fstat-fixed-note { color: var(--text-muted); font-size: 0.6rem; font-style: italic; }
+    .fstat summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      gap: 6px;
+      color: var(--text-on-dark);
+      font-size: 0.68rem;
+      user-select: none;
+    }
+    .fstat summary::-webkit-details-marker { display: none; }
+    .fstat summary:hover .fstat-top { color: var(--accent); }
+    .fstat-top { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fstat-n { color: var(--text-muted); font-family: var(--mono); font-size: 0.62rem; flex-shrink: 0; }
+    .fstat-n::after { content: ' ▾'; }
+    .fstat details[open] .fstat-n::after { content: ' ▴'; }
+    .fstat-list { margin-top: 6px; max-height: 240px; overflow-y: auto; }
+    .fstat-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 2px 8px;
+      padding: 2px 0;
+      font-size: 0.66rem;
+      color: var(--text-on-dark);
+    }
+    .fstat-row > span:first-child { overflow-wrap: anywhere; }
+    .fstat-row.none { color: var(--text-muted); font-style: italic; }
+    .fstat-count { font-family: var(--mono); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    .fstat-bar { grid-column: 1 / -1; height: 3px; background: rgba(160, 120, 40, 0.12); }
+    .fstat-bar span { display: block; height: 100%; background: var(--accent-light); }
+    .fstat-foot {
+      border-top: 1px solid #e0d6c0;
+      margin-top: 8px;
+      padding-top: 6px;
+      color: var(--text-muted);
+      font-size: 0.58rem;
+      line-height: 1.4;
+    }
+
+    /* ── Batch indicator (bottom-left of the pool section) ──────────────── */
+    #batch-indicator {
+      font-family: var(--mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      min-width: 92px;
+    }
+
     /* ── Card grid ──────────────────────────────────────────────────────── */
     #pool-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(154px, 1fr));
+      /* columns are set by layoutGrid() so each batch fills balanced rows */
+      grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
       gap: 10px;
       margin-bottom: 18px;
     }
@@ -522,11 +620,17 @@
       <span><span class="metric-label">Diversity</span><span class="metric-value" id="metric-diversity">—</span></span>
       <span><span class="metric-label">Surprise</span><span class="metric-value" id="metric-surprise">—</span></span>
     </div>
-    <div id="pool-grid"></div>
-    <div id="controls-bar">
-      <button id="prev-btn" disabled>← Previous</button>
-      <button id="next-btn" disabled>Next batch →</button>
-      <span id="status-msg"></span>
+    <div id="pool-body">
+      <aside id="feature-stats" hidden></aside>
+      <div id="pool-main">
+        <div id="pool-grid"></div>
+        <div id="controls-bar">
+          <span id="batch-indicator"></span>
+          <button id="prev-btn" disabled>← Previous</button>
+          <button id="next-btn" disabled>Next batch →</button>
+          <span id="status-msg"></span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -555,6 +659,7 @@
   let pool           = [];   // full result pool for current search
   let selected       = [];   // accumulated yes-picks — persists across searches
   let currentMetrics = null; // last metrics response from /search
+  let currentConcepts = [];  // concepts from /search: [{label, uri, feature}]
   let meta     = { query: '', sparql: '' };
   let serverHistory = { accepted: [], rejected: [], seen: [] };
 
@@ -571,6 +676,7 @@
   const poolSection = document.getElementById('pool-section');
   const poolGrid    = document.getElementById('pool-grid');
   const poolStat    = document.getElementById('pool-stat');
+  const batchIndicator = document.getElementById('batch-indicator');
   const prevBtn     = document.getElementById('prev-btn');
   const nextBtn     = document.getElementById('next-btn');
   const statusMsg   = document.getElementById('status-msg');
@@ -581,6 +687,7 @@
   const poolMetrics    = document.getElementById('pool-metrics');
   const metricDiversity = document.getElementById('metric-diversity');
   const metricSurprise  = document.getElementById('metric-surprise');
+  const featureStats    = document.getElementById('feature-stats');
   const errArea     = document.getElementById('err-area');
 
   /* ── Helpers ────────────────────────────────────────────────────────── */
@@ -588,7 +695,61 @@
     return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
-  function photoOf(item) { return item.properties?.url_photo || ''; }
+  function imagesOf(item) { return item.properties?.images || []; }
+  function thumbUrl(url)   { return '/thumb?url=' + encodeURIComponent(url); }
+
+  // <img> for an item: shows a cached thumbnail of its first image; if that is
+  // the collection's placeholder (/thumb answers 404) or fails, it tries the
+  // item's next image, and finally shows a neutral "no image" box.
+  function imgTag(item, cls, noImgCls, noImgText = '') {
+    const imgs = imagesOf(item);
+    if (!imgs.length) return `<div class="${noImgCls}">${noImgText}</div>`;
+    return `<img class="${cls}" src="${esc(thumbUrl(imgs[0]))}" alt="" loading="lazy"`
+         + ` data-images="${esc(JSON.stringify(imgs))}" data-idx="0"`
+         + ` data-noimg="${noImgCls}" data-noimg-text="${esc(noImgText)}" onerror="imgFallback(this)">`;
+  }
+
+  function imgFallback(img) {
+    const imgs = JSON.parse(img.dataset.images || '[]');
+    const next = Number(img.dataset.idx) + 1;
+    if (next < imgs.length) {
+      img.dataset.idx = next;
+      img.src = thumbUrl(imgs[next]);
+    } else {
+      const box = document.createElement('div');
+      box.className = img.dataset.noimg;
+      box.textContent = img.dataset.noimgText || '';
+      img.replaceWith(box);
+    }
+  }
+
+  // Warm the thumbnail cache for the whole pool in the background, a few at a
+  // time, so paging to the next batch shows images instantly. A new search
+  // cancels the previous preload.
+  let preloadToken = 0;
+  async function preloadPool(items) {
+    const token = ++preloadToken;
+    const queue = items.map(i => imagesOf(i)[0]).filter(Boolean);
+    const worker = async () => {
+      while (queue.length && token === preloadToken) {
+        const url = queue.shift();
+        await new Promise(res => { const im = new Image(); im.onload = im.onerror = res; im.src = thumbUrl(url); });
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, worker));
+  }
+
+  // Balanced grid: one row of N cards when it fits, otherwise the fewest rows
+  // with equal-as-possible columns (e.g. 9 → 5+4, or 3×3), never a lone straggler row.
+  const CARD_MIN_W = 96, GRID_GAP = 10;
+  function layoutGrid() {
+    const w = poolGrid.clientWidth;
+    if (!w) return;
+    const maxCols = Math.max(1, Math.floor((w + GRID_GAP) / (CARD_MIN_W + GRID_GAP)));
+    const rows = Math.ceil(N / Math.min(N, maxCols));
+    const cols = Math.ceil(N / rows);
+    poolGrid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  }
   function shortId(id)   { return id.split('/').pop() || id; }
   function clearErr()    { errArea.innerHTML = ''; }
   function showErr(msg)  { errArea.innerHTML = `<p class="err">${esc(msg)}</p>`; }
@@ -598,7 +759,7 @@
     const out  = [];
     for (const p of pools) {
       for (const item of p) {
-        const key = item.id + '||' + (item.properties?.url_photo || '');
+        const key = item.id;  // one pool item per artifact
         if (!seen.has(key)) { seen.add(key); out.push(item); }
       }
     }
@@ -617,6 +778,8 @@
       nextBtn.textContent = 'Next batch →';
     }
     statusMsg.textContent = !atFrontier() ? '(browsing past)' : '';
+    const totalBatches = Math.max(1, Math.ceil(pool.length / N));
+    batchIndicator.textContent = batchIdx >= 0 ? `Batch ${batchIdx + 1} / ${totalBatches}` : '';
   }
 
   /* ── Render pool ────────────────────────────────────────────────────── */
@@ -631,10 +794,7 @@
 
     poolGrid.innerHTML = displayed.map(item => {
       const kept  = isKept(item.id);
-      const photo = photoOf(item);
-      const img   = photo
-        ? `<img class="card-img" src="${esc(photo)}" alt="" onerror="this.closest('.artifact-card').style.display='none'">`
-        : `<div class="card-no-img">no image</div>`;
+      const img   = imgTag(item, 'card-img', 'card-no-img', 'no image');
       return `
         <div class="artifact-card${kept ? ' kept' : ''}" data-id="${esc(item.id)}">
           ${img}
@@ -657,8 +817,7 @@
       }
     });
 
-    const unseenCount = pool.filter(i => !serverHistory.seen.includes(i.id)).length;
-    poolStat.textContent = `${unseenCount} remaining in pool`;
+    poolStat.textContent = `${pool.length} object${pool.length !== 1 ? 's' : ''}`;
     updateNav();
   }
 
@@ -669,10 +828,7 @@
       selGrid.innerHTML = '<span class="empty-msg">No items selected yet.</span>';
     } else {
       selGrid.innerHTML = selected.map(item => {
-        const photo = photoOf(item);
-        const img   = photo
-          ? `<img src="${esc(photo)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'sel-card-no-img'}))">`
-          : `<div class="sel-card-no-img"></div>`;
+        const img   = imgTag(item, '', 'sel-card-no-img');
         return `
           <div class="sel-card">
             <button class="sel-remove" data-id="${esc(item.id)}" title="Remove">×</button>
@@ -694,6 +850,91 @@
     metricDiversity.textContent = fmt(metrics?.diversity);
     metricSurprise.textContent  = fmt(metrics?.surprise);
     poolMetrics.hidden = false;
+  }
+
+  new ResizeObserver(() => layoutGrid()).observe(document.getElementById('pool-main'));
+
+  /* ── Feature stats ──────────────────────────────────────────────────── */
+  // The three main Artifact features. A feature the query searched on
+  // (pinned) is shown as its fixed search value(s); the others get a
+  // dropdown with the distribution of values across the whole pool.
+  const MAIN_FEATURES = [['type', 'Type'], ['material', 'Material'], ['place', 'Place']];
+
+  function countValues(items, feature) {
+    const counts = new Map();
+    let missing = 0;
+    for (const item of items) {
+      const vals = [...new Set(item.properties?.[feature] || [])];  // each object counts once per value
+      if (!vals.length) { missing++; continue; }
+      for (const v of vals) counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    return { sorted, missing };
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function renderFeatureStats(items, concepts) {
+    featureStats.innerHTML = '';
+    if (!items.length) { featureStats.hidden = true; return; }
+
+    const pinned = {};
+    for (const c of concepts || []) (pinned[c.feature] ||= []).push(c.label);
+
+    featureStats.appendChild(el('div', 'fstat-title', 'In this pool'));
+
+    for (const [feature, label] of MAIN_FEATURES) {
+      const box = el('div', 'fstat');
+      box.appendChild(el('span', 'fstat-label', label));
+
+      if (pinned[feature]) {
+        const chips = el('div', 'fstat-chips');
+        for (const v of pinned[feature]) chips.appendChild(el('span', 'fstat-fixed', v));
+        chips.appendChild(el('span', 'fstat-fixed-note', 'searched'));
+        box.appendChild(chips);
+      } else {
+        const { sorted, missing } = countValues(items, feature);
+        const details = el('details');
+        const summary = el('summary');
+        summary.appendChild(el('span', 'fstat-top',
+          sorted.length ? `${sorted[0][0]} (${sorted[0][1]})` : 'not recorded'));
+        summary.appendChild(el('span', 'fstat-n',
+          `${sorted.length} value${sorted.length !== 1 ? 's' : ''}`));
+        details.appendChild(summary);
+
+        const list = el('div', 'fstat-list');
+        const max = sorted.length ? sorted[0][1] : 1;
+        for (const [value, n] of sorted) {
+          const row = el('div', 'fstat-row');
+          row.appendChild(el('span', null, value));
+          row.appendChild(el('span', 'fstat-count', n));
+          const bar = el('div', 'fstat-bar');
+          const fill = el('span');
+          fill.style.width = `${(100 * n / max).toFixed(1)}%`;
+          bar.appendChild(fill);
+          row.appendChild(bar);
+          list.appendChild(row);
+        }
+        if (missing) {
+          const row = el('div', 'fstat-row none');
+          row.appendChild(el('span', null, 'not recorded'));
+          row.appendChild(el('span', 'fstat-count', missing));
+          list.appendChild(row);
+        }
+        details.appendChild(list);
+        box.appendChild(details);
+      }
+      featureStats.appendChild(box);
+    }
+    featureStats.appendChild(el('div', 'fstat-foot',
+      `Counts cover all ${items.length} objects in the pool, not just this batch. ` +
+      'An object with several values counts once for each.'));
+    featureStats.hidden = false;
   }
 
   /* ── Keep ───────────────────────────────────────────────────────────── */
@@ -763,6 +1004,8 @@
   async function doSearch(queries) {
     clearErr();
     statusMsg.textContent = 'Querying…';
+    featureStats.hidden = true;
+    currentConcepts = [];
     prevBtn.disabled = true;
     nextBtn.disabled = true;
     if (queries.length === 1) showConceptsLoading();
@@ -785,6 +1028,7 @@
         const d = await r.json();
         if (!r.ok) { renderConcepts(d.concepts || []); throw new Error(d.error || 'Search failed'); }
         renderConcepts(d.concepts || []);
+        currentConcepts = d.concepts || [];
         firstPool      = d.pool;
         firstDisplayed = d.displayed;
         firstSparql    = d.sparql;
@@ -823,6 +1067,9 @@
       renderPool();
       renderSelected();
       renderMetrics(currentMetrics);
+      renderFeatureStats(pool, currentConcepts);
+      layoutGrid();
+      preloadPool(pool);
     } catch (e) {
       showErr(e.message);
       statusMsg.textContent = '';
@@ -965,6 +1212,7 @@
   /* ensure pool content renders above canvas */
   #pool-section .section-meta,
   #pool-section #pool-grid,
+  #pool-section #pool-body,
   #pool-section #controls-bar { position: relative; z-index: 1; }
 </style>
 <script>

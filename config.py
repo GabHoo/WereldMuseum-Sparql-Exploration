@@ -20,7 +20,13 @@ load_dotenv()
 REGISTRY = {
     "query_generation": {
         "category_select":  "modules.query_generation.category_select.CategorySelect",
-        "keyword_matching": "modules.query_generation.keyword_matching.KeywordMatching",
+        "concept_query":    "modules.query_generation.concept_query.ConceptQuery",
+        # Legacy alias: before the matcher/query split this key named the
+        # combined module. Kept so existing .env files keep working.
+        "keyword_matching": "modules.query_generation.concept_query.ConceptQuery",
+    },
+    "concept_matcher": {
+        "thesaurus": "modules.concept_matching.thesaurus_matcher.ThesaurusMatcher",
     },
     "knowledge_base": {
         "sparql_endpoint": "modules.knowledge_base.sparql_endpoint.SPARQLEndpoint",
@@ -44,17 +50,9 @@ def _load_class(module_type: str, key: str):
     return getattr(importlib.import_module(mod_path), class_name)
 
 
-# ── Field map: pool item fields → SPARQL variable names ──────────────────────
-# Change these if your SPARQL SELECT uses different variable names.
-
-FIELD_MAP = {
-    "id":    "artifact",
-    "title": "artifacttitle",
-}
-
 # ── General settings ──────────────────────────────────────────────────────────
 
-N_PER_BATCH = int(os.getenv("N_PER_BATCH", "10"))
+N_PER_BATCH = int(os.getenv("N_PER_BATCH", "9"))
 
 
 # ── Module builders ───────────────────────────────────────────────────────────
@@ -63,7 +61,14 @@ def _build_query_generation(key: str):
     cls = _load_class("query_generation", key)
     if key == "category_select":
         return cls(categories_file=os.getenv("CATEGORIES_FILE", ""))
-    if key == "keyword_matching":
+    if key in ("concept_query", "keyword_matching"):
+        return cls(matcher=_build_concept_matcher(os.getenv("CONCEPT_MATCHER", "thesaurus")))
+    return cls()
+
+
+def _build_concept_matcher(key: str):
+    cls = _load_class("concept_matcher", key)
+    if key == "thesaurus":
         files_raw = os.getenv("KEYWORD_MATCHING_THESAURUS_FILES", "")
         files = [f.strip() for f in files_raw.split(",") if f.strip()]
         return cls(
@@ -98,6 +103,27 @@ def _build_logger():
     )
 
 
+def _build_artifact_fetcher(knowledge_base):
+    from modules.artifact_fetcher import ArtifactFetcher
+    return ArtifactFetcher(
+        knowledge_base=knowledge_base,
+        fields_file=os.getenv(
+            "ARTIFACT_FIELDS_FILE", "collections/wereld_museum/artifact_fields.json"
+        ),
+    )
+
+
+def _build_image_cache():
+    from modules.image_cache import ImageCache
+    hosts = os.getenv("IMAGE_HOSTS", "collectie.wereldculturen.nl")
+    return ImageCache(
+        cache_dir=os.getenv("THUMBNAIL_CACHE_DIR", ".cache/thumbnails"),
+        allowed_hosts=[h.strip() for h in hosts.split(",")],
+        size=int(os.getenv("THUMBNAIL_SIZE", "480")),
+        placeholder_file=os.getenv("PLACEHOLDER_IMAGE_FILE", "").strip(),
+    )
+
+
 def _build_retrieval_evaluator(key: str):
     # Imports are inside the function so sentence-transformers is not loaded
     # unless RETRIEVAL_EVALUATOR is explicitly set in .env.
@@ -123,9 +149,12 @@ def build_modules() -> dict:
     exp_key = os.getenv("EXPORTER", "json")
     re_key  = os.getenv("RETRIEVAL_EVALUATOR", "").strip()
 
+    knowledge_base = _build_knowledge_base(kb_key)
     modules = {
         "query_generation":     _build_query_generation(qg_key),
-        "knowledge_base":       _build_knowledge_base(kb_key),
+        "knowledge_base":       knowledge_base,
+        "artifact_fetcher":     _build_artifact_fetcher(knowledge_base),
+        "image_cache":          _build_image_cache(),
         "selection":            _build_selection(sel_key),
         "exporter":             _build_exporter(exp_key),
         "logger":               _build_logger(),

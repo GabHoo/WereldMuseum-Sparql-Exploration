@@ -68,7 +68,7 @@ class EntropyDiversityCalculator(MetricsCalculator):
         counter = Counter(d_per_item)
         n = len(d_per_item)
         H = -sum((c / n) * math.log(c / n) for c in counter.values() if c > 0)
-        return H / math.log(k + 1)
+        return H / math.log(k + 1) + 0.0  # + 0.0 turns -0.0 into 0.0
 
     # ── Diversity: free-feature intra-pool spread ─────────────────────────────
 
@@ -79,12 +79,14 @@ class EntropyDiversityCalculator(MetricsCalculator):
         per_feature: list[float] = []
         for name in free:
             vals = [fm[name] for fm in item_features if fm.get(name) is not None]
-            if len(vals) < 2:
-                continue
-            if isinstance(vals[0], (int, float)):
-                per_feature.append(self._avg_pairwise_numeric(vals))
-            else:
-                per_feature.append(self._avg_pairwise_cosine(np.stack(vals)))
+            # A feature can mix kinds (e.g. a title that is just a number);
+            # use whichever kind most items have and skip the rest.
+            nums = [v for v in vals if isinstance(v, (int, float))]
+            vecs = [v for v in vals if not isinstance(v, (int, float))]
+            if len(vecs) >= len(nums) and len(vecs) >= 2:
+                per_feature.append(self._avg_pairwise_cosine(np.stack(vecs)))
+            elif len(nums) >= 2:
+                per_feature.append(self._avg_pairwise_numeric(nums))
 
         return float(np.mean(per_feature)) if per_feature else 0.0
 

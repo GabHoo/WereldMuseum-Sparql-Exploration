@@ -1,3 +1,14 @@
+"""
+Module interfaces. Every pipeline step is an ABC here; config.py picks the
+concrete class per step from .env.
+
+Pipeline (/search):
+    QueryGeneration ──▶ KnowledgeBase ──▶ ArtifactFetcher ──▶ SelectionStrategy
+      │  (finds ?artifact URIs)            (URIs → Artifact objects, modules/artifact.py)
+      │  (concept_query delegates text → concepts to a ConceptMatcher)
+      └─ query features ──▶ RetrievalEvaluator (optional)
+Then /next re-runs SelectionStrategy and /export runs Exporter.
+"""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -17,10 +28,44 @@ class SelectionHistory:
         )
 
 
+class ConceptMatcher(ABC):
+    """
+    Text → concepts. Decides *which concepts the user meant*; knows nothing
+    about SPARQL. Used by concept-based QueryGeneration implementations
+    (ConceptQuery), which decide *what to fetch* for those concepts.
+    """
+
+    @abstractmethod
+    def match(self, nl_query: str) -> list:
+        """
+        Map user text to concepts in the collection's vocabulary.
+
+        Returns a list of {"uri": str, "label": str | None, "feature": str}:
+          uri     : concept URI to anchor the query on
+          label   : human-readable label, or None if the URI is not in the
+                    vocabulary (e.g. an ancestor reached by generalisation)
+          feature : which item feature the concept constrains, using the
+                    shared feature vocabulary, which matches Artifact
+                    field names (type | material | place)
+        Returns [] when nothing matches.
+        """
+
+
 class QueryGeneration(ABC):
+    """
+    User input → SPARQL. The entry point app.py talks to for /search.
+    Implementations may delegate concept matching to a ConceptMatcher
+    (ConceptQuery) or map input to URIs directly (CategorySelect).
+    """
+
     @abstractmethod
     def convert(self, nl_query: str, context: dict) -> str:
-        """Convert natural-language input to a SPARQL SELECT query string."""
+        """
+        Convert user input to a SPARQL *find* query: a SELECT whose ?artifact
+        column lists the URIs of matching artifacts (use DISTINCT; LIMIT then
+        counts artifacts). Metadata is not selected here — ArtifactFetcher
+        fetches it for the returned URIs.
+        """
 
     def get_categories(self) -> list:
         """
@@ -31,8 +76,9 @@ class QueryGeneration(ABC):
 
     def match_concepts(self, nl_query: str) -> list:
         """
-        Return the intermediate concepts derived from nl_query before SPARQL generation.
-        Each entry is {"label": str, "uri": str}.
+        Return the concepts derived from nl_query, for display in the UI.
+        Each entry is {"label": str, "uri": str, "feature": str} — the
+        ConceptMatcher output, minus concepts that have no label.
         Default is empty — override in implementations that do explicit concept matching.
         """
         return []
@@ -40,7 +86,8 @@ class QueryGeneration(ABC):
     def get_query_features(self, nl_query: str) -> dict:
         """
         Extract pinned feature constraints from nl_query as a flat dict.
-        Returns {feature_name: raw_value} for each feature the query constrains.
+        Returns {feature_name: [labels]} for each feature the query constrains.
+        Feature names match Artifact field names (type | material | place).
         Default returns {} (all features are free; only diversity is computed).
         Override in subclasses that perform structured feature extraction.
         """
@@ -73,7 +120,8 @@ class RetrievalEvaluator(ABC):
     def score(self, pool: list[dict], query: dict) -> dict:
         """
         Compute pool-level metrics from retrieved items and pinned query features.
-        query: {feature_name: raw_value} for each pinned feature; {} means all features free.
+        pool : pool items whose "properties" is an Artifact dict
+        query: {feature_name: str | [str]} for each pinned feature; {} means all features free.
         Returns {"diversity": float, "surprise": float}
         """
 
