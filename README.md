@@ -26,7 +26,7 @@ Open `http://127.0.0.1:5000`.
 All module selection is done via `.env`. Copy `.env.example` to `.env` and set:
 
 ```ini
-QUERY_GENERATION=category_select  # category_select | template_keyword
+QUERY_GENERATION=category_select  # category_select | keyword_matching
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
 SELECTION=random                  # random
 EXPORTER=json                     # json
@@ -44,13 +44,13 @@ EXPORTER=json                     # json
 | Key | How it works |
 |-----|-------------|
 | `category_select` | Buttons with predefined categories; no text input |
-| `template_keyword` | Free-text box; tries to match a known category, falls back to title search |
+| `keyword_matching` | Free-text box; matches words against thesaurus concepts and pins type, material and origin in the SPARQL query |
 
-`template_keyword` accepts an optional extra entity-URI mapping:
+`keyword_matching` needs one or more thesaurus CSV files:
 ```ini
-TEMPLATE_KEYWORD_ENTITY_URIS_FILE=path/to/entity_uris.json
+KEYWORD_MATCHING_THESAURUS_FILES=collections/wereld_museum/thesaurus1.csv,collections/wereld_museum/thesaurus2.csv,collections/wereld_museum/thesaurus3.csv
 ```
-Format: `{"Label": "https://hdl.handle.net/..."}`.
+Expected columns: `concept, prefLabel, broad, altLabels` (altLabels pipe-separated).
 
 ---
 
