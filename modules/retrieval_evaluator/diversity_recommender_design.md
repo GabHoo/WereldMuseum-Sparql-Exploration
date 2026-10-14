@@ -100,6 +100,11 @@ items (core + relaxed).
 
 ### 5.1 Pinned-feature entropy (query-relative "surprise")
 
+> **Implementation note (2026-10-14):** the entropy / embedding-threshold version below is
+> *not* what the code implements. The implemented surprise is the share of items whose
+> concepts for a searched feature fall outside the searched concepts (and their narrower
+> concepts), compared by URI — see `surprise_calculator.py` and DESIGN.md §5.
+
 For each item and each pinned feature `f`:
 
 ```

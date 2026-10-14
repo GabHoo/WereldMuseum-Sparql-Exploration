@@ -86,8 +86,9 @@ class QueryGeneration(ABC):
     def get_query_features(self, nl_query: str) -> dict:
         """
         Extract pinned feature constraints from nl_query as a flat dict.
-        Returns {feature_name: [labels]} for each feature the query constrains.
-        Feature names match Artifact field names (type | material | place).
+        Returns {feature_name: [concept URIs]} for each feature the query
+        constrains. Feature names match Artifact field names (type | material |
+        place); the URIs are compared with the artifact's <feature>_uris field.
         Default returns {} (all features are free; only diversity is computed).
         Override in subclasses that perform structured feature extraction.
         """
@@ -121,8 +122,9 @@ class RetrievalEvaluator(ABC):
         """
         Compute pool-level metrics from retrieved items and pinned query features.
         pool : pool items whose "properties" is an Artifact dict
-        query: {feature_name: str | [str]} for each pinned feature; {} means all features free.
-        Returns {"diversity": float, "surprise": float}
+        query: {feature_name: [concept URIs]} for each pinned feature
+               (QueryGeneration.get_query_features); {} means all features free.
+        Returns {"diversity": float, "surprise": float | None}
         """
 
 

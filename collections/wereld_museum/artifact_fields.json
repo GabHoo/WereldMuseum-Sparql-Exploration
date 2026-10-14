@@ -1,25 +1,28 @@
 {
   "_comment": "How each Artifact field (modules/artifact.py) is read from the Wereld Museum / Colonial Collections graph. Each pattern must bind ?value for ?artifact. Fields left out here stay empty.",
   "prefixes": {
-    "crm":  "http://www.cidoc-crm.org/cidoc-crm/",
-    "dct":  "http://purl.org/dc/terms/",
-    "la":   "https://linked.art/ns/terms/",
+    "crm": "http://www.cidoc-crm.org/cidoc-crm/",
+    "dct": "http://purl.org/dc/terms/",
+    "la": "https://linked.art/ns/terms/",
     "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
     "skos": "http://www.w3.org/2004/02/skos/core#"
   },
   "fields": {
-    "title":            "?artifact dct:title ?value .",
+    "title": "?artifact dct:title ?value .",
     "inventory_number": "?artifact crm:P1_is_identified_by ?id . ?id rdfs:label \"Identification number\" ; crm:P190_has_symbolic_content ?value .",
-    "intended_use":     "?artifact crm:P103_was_intended_for/crm:P190_has_symbolic_content ?value .",
-    "dimensions":       "?artifact crm:P43_has_dimension/rdfs:label ?value .",
-    "type":             "?artifact crm:P2_has_type/skos:prefLabel ?value .",
-    "material":         "?artifact crm:P45_consists_of/skos:prefLabel ?value .",
-    "place":            "?artifact crm:P108i_was_produced_by/crm:P7_took_place_at/skos:prefLabel ?value .",
-    "date":             "?artifact crm:P108i_was_produced_by/rdfs:label ?value . FILTER(?value != \"Maker\")",
-    "maker":            "?artifact crm:P108i_was_produced_by/crm:P14_carried_out_by/rdfs:label ?value .",
-    "description":      "?artifact crm:P67i_is_referred_to_by ?text . ?text rdfs:label \"Description\" ; crm:P190_has_symbolic_content ?value .",
-    "acquisition":      "?artifact crm:P24i_changed_ownership_through/rdfs:label ?value .",
-    "acquired_from":    "?artifact crm:P24i_changed_ownership_through/crm:P23_transferred_title_from/rdfs:label ?value .",
-    "images":           "?artifact crm:P65_shows_visual_item/la:digitally_shown_by/la:access_point ?value ."
+    "intended_use": "?artifact crm:P103_was_intended_for/crm:P190_has_symbolic_content ?value .",
+    "dimensions": "?artifact crm:P43_has_dimension/rdfs:label ?value .",
+    "type": "?artifact crm:P2_has_type/skos:prefLabel ?value .",
+    "material": "?artifact crm:P45_consists_of/skos:prefLabel ?value .",
+    "place": "?artifact crm:P108i_was_produced_by/crm:P7_took_place_at/skos:prefLabel ?value .",
+    "date": "?artifact crm:P108i_was_produced_by/rdfs:label ?value . FILTER(?value != \"Maker\")",
+    "maker": "?artifact crm:P108i_was_produced_by/crm:P14_carried_out_by/rdfs:label ?value .",
+    "description": "?artifact crm:P67i_is_referred_to_by ?text . ?text rdfs:label \"Description\" ; crm:P190_has_symbolic_content ?value .",
+    "acquisition": "?artifact crm:P24i_changed_ownership_through/rdfs:label ?value .",
+    "acquired_from": "?artifact crm:P24i_changed_ownership_through/crm:P23_transferred_title_from/rdfs:label ?value .",
+    "images": "?artifact crm:P65_shows_visual_item/la:digitally_shown_by/la:access_point ?value .",
+    "type_uris": "?artifact crm:P2_has_type ?value .",
+    "material_uris": "?artifact crm:P45_consists_of ?value .",
+    "place_uris": "?artifact crm:P108i_was_produced_by/crm:P7_took_place_at ?value ."
   }
 }

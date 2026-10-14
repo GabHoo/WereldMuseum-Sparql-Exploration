@@ -37,7 +37,7 @@ class MultilingualFeatureEncoder(FeatureEncoder):
     """
     Encodes feature dicts using a multilingual sentence-transformer.
 
-    Both query and item features are plain {key: value} dicts.
+    Item features are plain {key: value} dicts.
     The encoder returns a dict with the same keys; values become:
       - np.ndarray for text, and for lists of text (mean of the embeddings)
       - float for numeric
@@ -53,10 +53,6 @@ class MultilingualFeatureEncoder(FeatureEncoder):
         self._text_cache: dict[str, np.ndarray] = {}
 
     # ── Public interface ──────────────────────────────────────────────────────
-
-    def encode_query(self, query: dict) -> dict:
-        """Encode a query feature dict. query = {feature_name: raw_value}."""
-        return self._encode_dict(query)
 
     def encode_item(self, item: dict) -> dict:
         """Encode a single feature dict (extracted from a pool item externally)."""

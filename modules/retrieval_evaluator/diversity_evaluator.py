@@ -8,7 +8,8 @@ Adding a new SPARQL field: it appears automatically in diversity computation.
 
 Usage (CLI):
     python -m modules.retrieval_evaluator.diversity_evaluator path/to/export.json
-    python -m modules.retrieval_evaluator.diversity_evaluator path/to/export.json --pinned type=maskers
+    python -m modules.retrieval_evaluator.diversity_evaluator path/to/export.json \
+        --pinned type=https://hdl.handle.net/20.500.11840/termmaster10069604
 
 Environment:
     EMBEDDING_MODEL  — override the sentence-transformer model name
@@ -18,12 +19,15 @@ import os
 import sys
 
 from modules.base import RetrievalEvaluator
-from modules.retrieval_evaluator.base import FeatureEncoder, MetricsCalculator
+from modules.retrieval_evaluator.base import FeatureEncoder, MetricsCalculator, SurpriseCalculator
 
 # Artifact fields (modules/artifact.py) that carry no semantic content for
-# embedding: identifiers, URLs, measurements. Long free-text descriptions are
+# embedding: identifiers, URLs, concept URIs, measurements. Long free-text descriptions are
 # also skipped to keep per-search embedding cost low.
-_NOISE_KEYS = frozenset({"id", "images", "inventory_number", "dimensions", "description"})
+_NOISE_KEYS = frozenset({
+    "id", "images", "inventory_number", "dimensions", "description",
+    "type_uris", "material_uris", "place_uris",
+})
 
 
 def _extract_features(item: dict) -> dict:
@@ -46,38 +50,65 @@ def _extract_features(item: dict) -> dict:
 
 class DiversityEvaluator(RetrievalEvaluator):
     """
-    Evaluates a retrieved pool by diversity and surprise.
+    Evaluates a retrieved pool on two separate axes:
 
-    encoder    : encodes {feature_name: raw_value} dicts into {feature_name: vector|float}
-    calculator : computes pool-level metrics from the encoded dicts
+    encoder + calculator : diversity — embedding spread over the free features
+    surprise             : share of items outside the searched concepts (by URI)
     """
 
-    def __init__(self, encoder: FeatureEncoder, calculator: MetricsCalculator):
+    def __init__(self, encoder: FeatureEncoder, calculator: MetricsCalculator,
+                 surprise: SurpriseCalculator):
         self.encoder    = encoder
         self.calculator = calculator
+        self.surprise   = surprise
 
     def score(self, pool: list[dict], query: dict) -> dict:
         """
         pool  : list of normalised pool items {id, title, score, properties}
-        query : pinned feature dict {feature_name: str | [str]}; {} → all features free
-        Returns {"diversity": float, "surprise": float}
+        query : {feature_name: [concept URIs]} searched per feature; {} → all features free
+        Returns {"diversity": float, "surprise": float | None} — surprise is
+        None if the searched concepts could not be expanded (endpoint error).
         """
         if not pool:
             return {"diversity": 0.0, "surprise": 0.0}
 
-        feature_dicts  = [_extract_features(item) for item in pool]
-        query_encoded  = self.encoder.encode_query(query)
-        items_encoded  = self.encoder.encode_pool(feature_dicts)
-        return self.calculator.compute(query_encoded, items_encoded)
+        items_encoded = self.encoder.encode_pool([_extract_features(item) for item in pool])
+        result = self.calculator.compute(items_encoded, set(query))
+        try:
+            result["surprise"] = self.surprise.compute(pool, query)
+        except Exception:
+            result["surprise"] = None
+        return result
+
+
+def build_default(knowledge_base) -> "DiversityEvaluator":
+    """The standard evaluator: multilingual encoder, pairwise diversity, concept surprise."""
+    from modules.retrieval_evaluator.feature_encoder import MultilingualFeatureEncoder
+    from modules.retrieval_evaluator.metrics_calculator import PairwiseDiversityCalculator
+    from modules.retrieval_evaluator.surprise_calculator import ConceptSurpriseCalculator
+
+    model_name = os.getenv(
+        "EMBEDDING_MODEL",
+        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+    )
+    return DiversityEvaluator(
+        encoder=MultilingualFeatureEncoder(model_name=model_name),
+        calculator=PairwiseDiversityCalculator(),
+        surprise=ConceptSurpriseCalculator(knowledge_base),
+    )
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(
             "Usage: python -m modules.retrieval_evaluator.diversity_evaluator"
-            " <export_or_pool.json> [--pinned feat=value ...]"
+            " <export_or_pool.json> [--pinned feature=<concept URI> ...]"
         )
         sys.exit(1)
+
+    from dotenv import load_dotenv
+    from modules.knowledge_base.sparql_endpoint import SPARQLEndpoint
+    load_dotenv()
 
     path = sys.argv[1]
     with open(path, encoding="utf-8") as f:
@@ -91,8 +122,8 @@ if __name__ == "__main__":
         pool     = data.get("items", [])
         nl_query = data.get("meta", {}).get("query", "")
 
-    # Parse --pinned key=value pairs
-    query_features: dict = {}
+    # Parse --pinned feature=<concept URI> pairs (repeat a feature for several concepts)
+    query_features: dict[str, list[str]] = {}
     pinned_mode = False
     for arg in sys.argv[2:]:
         if arg == "--pinned":
@@ -100,25 +131,15 @@ if __name__ == "__main__":
             continue
         if pinned_mode and "=" in arg:
             k, v = arg.split("=", 1)
-            query_features[k.strip()] = v.strip()
+            query_features.setdefault(k.strip(), []).append(v.strip())
 
     print(f"Pool    : {len(pool)} items")
     print(f"NL query: {nl_query!r}")
     print(f"Pinned  : {query_features or '(none — all features free)'}")
     print()
 
-    from modules.retrieval_evaluator.feature_encoder import MultilingualFeatureEncoder
-    from modules.retrieval_evaluator.metrics_calculator import EntropyDiversityCalculator
-
-    model_name = os.getenv(
-        "EMBEDDING_MODEL",
-        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-    )
-    print(f"Loading model: {model_name} …")
-    encoder    = MultilingualFeatureEncoder(model_name=model_name)
-    calculator = EntropyDiversityCalculator()
-    evaluator  = DiversityEvaluator(encoder=encoder, calculator=calculator)
-
+    kb = SPARQLEndpoint(os.getenv("SPARQL_ENDPOINT_URL", ""))
+    print("Loading model …")
+    evaluator = build_default(kb)
     print("Computing metrics …")
-    result = evaluator.score(pool, query_features)
-    print(json.dumps(result, indent=2))
+    print(json.dumps(evaluator.score(pool, query_features), indent=2))

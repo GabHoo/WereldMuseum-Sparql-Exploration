@@ -79,10 +79,11 @@ class ConceptQuery(QueryGeneration):
         ]
 
     def get_query_features(self, nl_query: str) -> dict:
+        # All matched URIs, including unlabelled ancestors: they are part of
+        # what the find query searched for.
         features: dict[str, list[str]] = {}
         for c in self._concepts(nl_query):
-            if c["label"] is not None:
-                features.setdefault(c["feature"], []).append(c["label"])
+            features.setdefault(c["feature"], []).append(c["uri"])
         return features
 
     def convert(self, nl_query: str, context: dict) -> str:

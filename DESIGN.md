@@ -80,13 +80,13 @@ class QueryGeneration(ABC):
 
 Feature names are **Artifact field names**. A ConceptMatcher tags each concept with one of them, `get_query_features()` returns `{feature: [labels]}` with those keys, and every pool item's `properties` (an Artifact dict) has a field of the same name:
 
-| Feature | Find-query anchor (in `concept_query`) | Artifact field |
+| Feature | Find-query anchor (in `concept_query`) | Artifact fields (labels / concept URIs) |
 |---------|----------------------------------------|----------------|
-| `type` | `?artifact crm:P2_has_type` | `type: list[str]` |
-| `material` | `?artifact crm:P45_consists_of` | `material: list[str]` |
-| `place` | `?artifact crm:P108i_was_produced_by/crm:P7_took_place_at` | `place: list[str]` |
+| `type` | `?artifact crm:P2_has_type` | `type`, `type_uris` |
+| `material` | `?artifact crm:P45_consists_of` | `material`, `material_uris` |
+| `place` | `?artifact crm:P108i_was_produced_by/crm:P7_took_place_at` | `place`, `place_uris` |
 
-So a query feature `{"type": ["maskers (kleding)"]}` is directly comparable to `properties["type"]` of every item — enabling the `RetrievalEvaluator` to measure surprise (distance from the query anchor) without any key translation.
+`get_query_features()` returns the searched **concept URIs** per feature, e.g. `{"type": ["https://hdl.handle.net/…/termmaster10069604"]}`, which compare directly with `properties["type_uris"]` of every item — this is how the `RetrievalEvaluator` measures surprise, without any key translation or label matching.
 
 `get_query_features()` returns `{}` on implementations that don't produce typed concept matches (e.g. `CategorySelect`), in which case the evaluator treats the query as unpinned and reports only diversity.
 
@@ -203,28 +203,29 @@ Scores the whole retrieved pool on two separate axes. Enabled by setting `RETRIE
 | | |
 |--|--|
 | **Input** | `pool: list[dict]` — normalised pool items |
-| | `query: dict` — pinned features from `QueryGeneration.get_query_features()`; `{}` means all features free |
-| **Output** | `{"diversity": float, "surprise": float}` |
+| | `query: dict` — `{feature: [concept URIs]}` from `QueryGeneration.get_query_features()`; `{}` means all features free |
+| **Output** | `{"diversity": float, "surprise": float \| null}` |
 
 ```python
 class RetrievalEvaluator(ABC):
     def score(self, pool: list[dict], query: dict) -> dict: ...
 ```
 
-`DiversityEvaluator` (key `diversity`) is composed of two sub-modules (`modules/retrieval_evaluator/base.py`):
+`DiversityEvaluator` (key `diversity`) is composed of three sub-modules (interfaces in `modules/retrieval_evaluator/base.py`):
 
 - `FeatureEncoder` — `MultilingualFeatureEncoder` turns feature values into vectors.
-- `MetricsCalculator` — `EntropyDiversityCalculator` turns those vectors into the two scores.
+- `MetricsCalculator` — `PairwiseDiversityCalculator` turns those vectors into **diversity**.
+- `SurpriseCalculator` — `ConceptSurpriseCalculator` computes **surprise** from concept URIs (no embeddings).
 
 #### How the metrics are calculated
 
-**Step 1 — features per item.** Each pool item's `properties` (its Artifact fields) minus non-semantic keys (`id`, `images`, `inventory_number`, `dimensions`, and the long `description`). What remains is typically `title`, `type`, `material`, `place`, `date`, `maker`, `intended_use`, `acquisition`, `acquired_from`; empty fields are dropped.
-
-**Step 2 — encode.** Every text value is embedded with a multilingual sentence-transformer (`EMBEDDING_MODEL`, default `paraphrase-multilingual-mpnet-base-v2`) into an L2-normalised vector, so `cosine_distance(a, b) = 1 − a·b` (0 = same meaning, larger = more different). A list field (e.g. `material: ["hout", "kleurstof"]`) becomes the re-normalised **mean** of its values' vectors — one vector sitting between its values. A single value that parses as a number becomes a float. The pinned query features (`{"type": ["maskers (kleding)"]}`) are encoded the same way. Embeddings are cached per text for the server's lifetime.
-
-**Step 3 — split features.** *Pinned* = the features the query constrained (keys of `get_query_features()`); *free* = every other feature present on any item. Pinned features feed only surprise; free features feed only diversity.
+**Pinned vs free.** *Pinned* features are the ones the query searched on (keys of `get_query_features()`); *free* features are all others present on any item. Diversity looks only at free features; surprise only at pinned ones.
 
 **Diversity** — "how varied is the pool where the user left it open?"
+
+1. *Features per item*: the item's Artifact fields minus non-semantic keys (`id`, `images`, `inventory_number`, `dimensions`, `description`, and the `*_uris` fields). Typically `title`, `type`, `material`, `place`, `date`, `maker`, `intended_use`, `acquisition`, `acquired_from`; empty fields are dropped.
+2. *Encode*: every text value is embedded with a multilingual sentence-transformer (`EMBEDDING_MODEL`, default `paraphrase-multilingual-mpnet-base-v2`) into an L2-normalised vector, so `cosine_distance(a, b) = 1 − a·b`. A list field (e.g. `material: ["hout", "kleurstof"]`) becomes the re-normalised **mean** of its values' vectors. A single value that parses as a number becomes a float. Embeddings are cached per text for the server's lifetime.
+3. *Score*:
 
 ```
 for each free feature f:
@@ -233,28 +234,30 @@ for each free feature f:
 diversity = unweighted mean of diversity_f over free features
 ```
 
-Numeric features use mean pairwise `|a − b|` instead. If a feature mixes numbers and text across items (e.g. a title that is just a number), the minority kind is ignored. Range: roughly 0 (all items alike) upward; with sentence embeddings, values cluster in a narrow middle band (~0.2–0.5), so compare pools against each other rather than reading the number absolutely.
+Numeric features use mean pairwise `|a − b|` instead. If a feature mixes numbers and text across items (e.g. a title that is just a number), the minority kind is ignored. With sentence embeddings, values cluster in a narrow middle band (~0.2–0.5), so compare pools against each other rather than reading the number absolutely.
 
-**Surprise** — "how unevenly do items deviate from what was searched?"
+**Surprise** — "how much of the pool falls outside what was searched?"
+
+For each pinned feature, the searched concepts are first expanded with everything below them in the thesaurus (`skos:narrower*`, one SPARQL query per feature, cached) — the same expansion the find query uses, so a *dansmasker* counts as within *maskers (kleding)*. Then:
 
 ```
 k = number of pinned features (0 → surprise = 0)
-for each item:
-    d(item) = number of pinned features f where the item has f
-              and cosine_distance(query_f, item_f) > τ_f        (τ_f = 0.30 by default)
-p(d) = fraction of the pool with deviation count d,  d ∈ {0 … k}
-H = −Σ_d p(d) · ln p(d)
-surprise = H / ln(k + 1)                                 (normalised to 0 … 1)
+for each item, for each pinned feature f:
+    deviates on f  ⇔  item has ≥ 1 concept for f   (properties["<f>_uris"])
+                      and none of them is a searched concept or below one
+d(item)  = number of pinned features the item deviates on
+surprise = mean over the pool of d(item) / k        (0 … 1)
 ```
 
-Worked example: two pinned features (type, place), 100 items; 60 match both (d = 0), 30 deviate on one (d = 1), 10 on both (d = 2). Then `H = −(0.6 ln 0.6 + 0.3 ln 0.3 + 0.1 ln 0.1) = 0.898` and `surprise = 0.898 / ln 3 = 0.817`.
+- **Surprise > 0 exactly when some item deviates.** With two searched concepts on one feature (e.g. place = Ivoorkust, Liberia), an item deviates only if its places include *neither* of them (nor anything below them) — something else entirely.
+- **Not recorded is not surprising.** An item with no value for a pinned feature does not count as deviating on it.
+- **Concepts are compared by URI**, so differences in label wording never create surprise; extra values do not either (an object typed both *maskers* and *diapositieven* still contains the searched type).
+- **It is 0 for today's searches by construction.** The find query requires every pinned feature, so every retrieved item is within the searched concepts. Surprise becomes informative once retrieval also returns near-misses (relaxed retrieval: drop one pinned constraint at a time, see the diversity design doc).
+- If the expansion query fails, surprise is reported as `null` rather than a wrong number.
 
-Things to know when reading the number:
+Worked example (checked against the live collection): scoring the 95-object *masker* pool against `place = Ivoorkust` → 93 items deviate on 1 of 1 feature → surprise `93/95 = 0.979`; against `place = Ivoorkust, Liberia` → 92 deviate → `0.968`; against `type = maskers` **and** `place = Ivoorkust` → 93 items deviate on 1 of 2 → `93 × 0.5 / 95 = 0.489`.
 
-- **Entropy measures spread, not amount.** A pool where *every* item deviates on everything also scores 0 — all items share the same `d`. High surprise means the pool mixes close matches with deviations.
-- **Today it measures label mismatch, not real deviation.** The find query requires every pinned feature, so every item truly has the searched concept (or a narrower one). A non-zero surprise therefore comes from the *embedding* comparison: an item whose label for that feature differs in wording from the searched label, or which has extra values that pull its mean vector away. Example: searching `hout` is turned into the concept "hout naar samenstelling of herkomst"; items labelled `["hout", "hardhout"]` sit at distance 0.32–0.40 from that long label, so 97 of 100 count as deviating and surprise is 0.19. Surprise becomes a real "challenges your search" signal once relaxed retrieval (drop one pinned constraint at a time, see the diversity design doc) adds near-miss candidates.
-- **Items missing a pinned feature count as non-deviating** on it.
-- **Both scores describe the whole pool** (up to 100 objects), not the batch on screen.
+**Both scores describe the whole pool** (up to 100 objects), not the batch on screen.
 
 The method and its rationale are in `modules/retrieval_evaluator/diversity_recommender_design.md`.
 
@@ -375,6 +378,9 @@ Adding a new implementation = add one registry entry + set the env var (plus a `
 | `acquisition` | `list[str]` | acquisition event label (e.g. "Schenking") |
 | `acquired_from` | `list[str]` | acquisition `P23_transferred_title_from` label |
 | `images` | `list[str]` | `P65 / digitally_shown_by / access_point` |
+| `type_uris` | `list[str]` | `P2_has_type` concept URIs |
+| `material_uris` | `list[str]` | `P45_consists_of` concept URIs |
+| `place_uris` | `list[str]` | production `P7_took_place_at` concept URIs |
 
 Pool items wrap an artifact for the UI and the selection loop:
 
@@ -397,7 +403,10 @@ Pool items wrap an artifact for the UI and the selection loop:
     "description": ["Het masker danst tijdens de Goli, …"],
     "acquisition": ["Verwerving: aankoop", "Aankoop"],
     "acquired_from": ["A.P. (André) Schaller"],
-    "images": ["https://…/TM-3305-18.jpg", "https://…"]
+    "images": ["https://…/TM-3305-18.jpg", "https://…"],
+    "type_uris": ["https://hdl.handle.net/20.500.11840/termmaster10069604"],
+    "material_uris": ["…/termmaster10065614", "…/termmaster10065560"],
+    "place_uris": ["…/termmaster10054917"]
   }
 }
 ```
@@ -509,10 +518,11 @@ museum_curation/
 │   │   └── random_strategy.py           # random.sample(unseen, n)
 │   ├── retrieval_evaluator/
 │   │   ├── _stub.py
-│   │   ├── base.py                      # FeatureEncoder + MetricsCalculator ABCs
+│   │   ├── base.py                      # FeatureEncoder, MetricsCalculator, SurpriseCalculator ABCs
 │   │   ├── diversity_evaluator.py       # DiversityEvaluator (+ CLI)
 │   │   ├── feature_encoder.py           # multilingual sentence-transformer encoder
-│   │   ├── metrics_calculator.py        # diversity + surprise
+│   │   ├── metrics_calculator.py        # diversity (pairwise embedding distance)
+│   │   ├── surprise_calculator.py       # surprise (items outside the searched concepts)
 │   │   └── diversity_recommender_design.md
 │   ├── exporter/
 │   │   ├── _stub.py

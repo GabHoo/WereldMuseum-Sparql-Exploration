@@ -29,6 +29,12 @@ class Artifact:
     acquisition: list[str] = field(default_factory=list)   # how the museum acquired it
     acquired_from: list[str] = field(default_factory=list) # previous owner(s)
     images: list[str] = field(default_factory=list)        # image URLs
+    # Concept URIs behind type / material / place (same concepts as the labels
+    # above). Used to compare an artifact with the searched concepts by
+    # identity rather than by label text.
+    type_uris: list[str] = field(default_factory=list)
+    material_uris: list[str] = field(default_factory=list)
+    place_uris: list[str] = field(default_factory=list)
 
     @classmethod
     def field_names(cls) -> list[str]:

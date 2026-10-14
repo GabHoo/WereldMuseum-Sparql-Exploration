@@ -124,21 +124,12 @@ def _build_image_cache():
     )
 
 
-def _build_retrieval_evaluator(key: str):
+def _build_retrieval_evaluator(key: str, knowledge_base):
     # Imports are inside the function so sentence-transformers is not loaded
     # unless RETRIEVAL_EVALUATOR is explicitly set in .env.
     if key == "diversity":
-        from modules.retrieval_evaluator.feature_encoder import MultilingualFeatureEncoder
-        from modules.retrieval_evaluator.metrics_calculator import EntropyDiversityCalculator
-        from modules.retrieval_evaluator.diversity_evaluator import DiversityEvaluator
-
-        model_name = os.getenv(
-            "EMBEDDING_MODEL",
-            "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-        )
-        encoder    = MultilingualFeatureEncoder(model_name=model_name)
-        calculator = EntropyDiversityCalculator()
-        return DiversityEvaluator(encoder=encoder, calculator=calculator)
+        from modules.retrieval_evaluator.diversity_evaluator import build_default
+        return build_default(knowledge_base)
     raise ValueError(f"Unknown retrieval_evaluator key: {key!r}")
 
 
@@ -161,5 +152,5 @@ def build_modules() -> dict:
         "query_generation_key": qg_key,
     }
     if re_key:
-        modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key)
+        modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)
     return modules
