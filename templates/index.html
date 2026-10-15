@@ -483,6 +483,15 @@
     #selected-section .section-label { color: var(--accent); }
     #selected-section .section-stat  { color: var(--text-muted); }
 
+    #selection-diversity {
+      margin: 12px 0 4px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.04em;
+    }
+    #selection-diversity strong { color: var(--text); font-weight: 600; }
+
     .empty-msg { color: #8a8070; }
 
     #selected-grid {
@@ -639,6 +648,9 @@
       <span class="section-label">Selection</span>
       <span class="section-stat" id="sel-stat">0 items</span>
     </div>
+    <div id="selection-diversity" aria-live="polite">
+      Internal diversity (Shannon): <strong id="selection-diversity-value">0.000</strong>
+    </div>
     <div id="selected-grid">
       <span class="empty-msg">No items selected yet.</span>
     </div>
@@ -682,6 +694,7 @@
   const statusMsg   = document.getElementById('status-msg');
   const selGrid     = document.getElementById('selected-grid');
   const selStat     = document.getElementById('sel-stat');
+  const selectionDiversityValue = document.getElementById('selection-diversity-value');
   const exportBtn      = document.getElementById('export-btn');
   const exhibitionBtn  = document.getElementById('exhibition-btn');
   const poolMetrics    = document.getElementById('pool-metrics');
@@ -822,8 +835,43 @@
   }
 
   /* ── Render selected ────────────────────────────────────────────────── */
+  const DIVERSITY_FIELDS = [
+    'type', 'material', 'place', 'date', 'maker', 'intended_use', 'acquisition', 'acquired_from'
+  ];
+
+  function calculateSelectionDiversity(items) {
+    const entropies = [];
+    for (const field of DIVERSITY_FIELDS) {
+      const counts = new Map();
+      let total = 0;
+      for (const item of items) {
+        const value = item.properties?.[field];
+        const values = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
+        const categories = [...new Set(values
+          .filter(v => typeof v === 'string' && v.trim())
+          .map(v => v.trim().toLocaleLowerCase()))];
+        if (!categories.length) continue;
+        const weight = 1 / categories.length;
+        for (const category of categories) {
+          counts.set(category, (counts.get(category) || 0) + weight);
+          total += weight;
+        }
+      }
+      if (total) {
+        let entropy = 0;
+        for (const count of counts.values()) {
+          const probability = count / total;
+          entropy -= probability * Math.log(probability);
+        }
+        entropies.push(entropy);
+      }
+    }
+    return entropies.length ? entropies.reduce((sum, value) => sum + value, 0) / entropies.length : 0;
+  }
+
   function renderSelected() {
     selStat.textContent = `${selected.length} item${selected.length !== 1 ? 's' : ''}`;
+    selectionDiversityValue.textContent = calculateSelectionDiversity(selected).toFixed(3);
     if (!selected.length) {
       selGrid.innerHTML = '<span class="empty-msg">No items selected yet.</span>';
     } else {
