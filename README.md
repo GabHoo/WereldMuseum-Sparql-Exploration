@@ -29,7 +29,7 @@ All module selection is done via `.env`. Copy `.env.example` to `.env` and set:
 QUERY_GENERATION=category_select  # category_select | concept_query
 CONCEPT_MATCHER=thesaurus         # thesaurus (used by concept_query)
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
-SELECTION=random                  # random
+SELECTION=random                  # random | relevance_feedback
 EXPORTER=json                     # json
 RETRIEVAL_EVALUATOR=              # diversity | blank = off
 REPRESENTATION=                   # embeddinggemma | blank = off
@@ -74,6 +74,10 @@ Expected columns: `concept, prefLabel, broad, altLabels` (altLabels pipe-separat
 
 `REPRESENTATION=embeddinggemma` embeds every search result (image + metadata) with [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) in the background and keeps the vectors in memory: a *search bank* that is replaced on each new query, and a *selection bank* of kept objects that persists. `REPRESENTATION_VIEWS` picks the vectors per object (`fused` by default; also `image`, `text`). Progress: `GET /representations/status`. See DESIGN.md §8.
 
+### Selection
+
+`SELECTION=relevance_feedback` (needs `REPRESENTATION`) re-ranks each new batch from the curator's feedback: kept objects pull similar ones up, shown-but-not-kept ones push them down a little, and 2 of 10 objects are still picked at random. Settings are the `RERANK_*` variables in `.env.example`. Compare it with random selection offline with `python -m modules.selection.relevance_feedback <pool or runs.log> --target <concept URI>`. See DESIGN.md §4.
+
 ---
 
 ## Add a new module implementation
@@ -105,6 +109,7 @@ modules/
   exhibition_builder/ Downstream exhibition layouts (skeleton)
 templates/
   index.html        Single-page curation UI
+tests/              Unit tests (python -m tests.test_relevance_feedback)
 .env.example        Documents all environment variables
 DESIGN.md           Full architecture and module specifications
 ```

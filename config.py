@@ -33,7 +33,8 @@ REGISTRY = {
         "rdf_file":        "modules.knowledge_base.rdf_file.RDFFile",
     },
     "selection": {
-        "random": "modules.selection.random_strategy.RandomStrategy",
+        "random":             "modules.selection.random_strategy.RandomStrategy",
+        "relevance_feedback": "modules.selection.relevance_feedback.RelevanceFeedbackStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -90,8 +91,26 @@ def _build_knowledge_base(key: str):
     return cls()
 
 
-def _build_selection(key: str):
-    return _load_class("selection", key)()
+def rerank_kwargs() -> dict:
+    """RelevanceFeedbackStrategy settings from the RERANK_* env vars."""
+    return {
+        "view":        os.getenv("RERANK_VIEW", "fused").strip() or "fused",
+        "scoring":     os.getenv("RERANK_SCORING", "rocchio").strip() or "rocchio",
+        "beta":        float(os.getenv("RERANK_BETA", "1.0")),
+        "gamma":       float(os.getenv("RERANK_GAMMA", "0.25")),
+        "k":           int(os.getenv("RERANK_K", "3")),
+        "mmr_lambda":  float(os.getenv("RERANK_MMR_LAMBDA", "0.7")),
+        "explore":     float(os.getenv("RERANK_EXPLORE", "0.2")),
+        "wait":        float(os.getenv("RERANK_WAIT", "1.0")),
+        "cross_query": os.getenv("RERANK_CROSS_QUERY", "true").strip().lower() != "false",
+    }
+
+
+def _build_selection(key: str, representation=None):
+    cls = _load_class("selection", key)
+    if key == "relevance_feedback":
+        return cls(representation=representation, **rerank_kwargs())
+    return cls()
 
 
 def _build_exporter(key: str):
@@ -167,7 +186,6 @@ def build_modules() -> dict:
         "knowledge_base":       knowledge_base,
         "artifact_fetcher":     _build_artifact_fetcher(knowledge_base),
         "image_cache":          _build_image_cache(),
-        "selection":            _build_selection(sel_key),
         "exporter":             _build_exporter(exp_key),
         "logger":               _build_logger(),
         "query_generation_key": qg_key,
@@ -176,4 +194,6 @@ def build_modules() -> dict:
         modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)
     if rep_key:
         modules["representation"] = _build_representation(rep_key, modules["image_cache"])
+    # After the representation: a re-ranking strategy gets it injected.
+    modules["selection"] = _build_selection(sel_key, modules.get("representation"))
     return modules

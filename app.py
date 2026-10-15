@@ -131,7 +131,8 @@ def search():
     metrics = evaluator.score(pool, query_features) if evaluator else None
 
     # Persist the search trail for auditing/logging before returning the result.
-    MODULES["logger"].log_search(nl_query, sparql, pool, displayed, query_features)
+    MODULES["logger"].log_search(nl_query, sparql, pool, displayed, query_features,
+                                 rerank=getattr(MODULES["selection"], "last_debug", None))
     return jsonify({"sparql": sparql, "pool": pool, "displayed": displayed, "concepts": concepts, "metrics": metrics})
 
 
@@ -146,7 +147,8 @@ def next_batch():
     representation = MODULES.get("representation")
     if representation:
         representation.prioritize([item["id"] for item in displayed])
-    MODULES["logger"].log_next(data.get("history", {}), displayed)
+    MODULES["logger"].log_next(data.get("history", {}), displayed,
+                               rerank=getattr(MODULES["selection"], "last_debug", None))
     return jsonify({"displayed": displayed, "pool": pool})
 
 

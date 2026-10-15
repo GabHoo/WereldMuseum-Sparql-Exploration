@@ -952,6 +952,12 @@
   /* ── Keep ───────────────────────────────────────────────────────────── */
   function keepItem(item, btn, card) {
     selected.push(item);
+    // Kept after going back to an earlier batch: no longer a rejection.
+    const rejIdx = serverHistory.rejected.indexOf(item.id);
+    if (rejIdx !== -1) {
+      serverHistory.rejected.splice(rejIdx, 1);
+      serverHistory.accepted.push(item.id);
+    }
     card.classList.add('kept');
     btn.disabled    = true;
     btn.textContent = '✓ Kept';

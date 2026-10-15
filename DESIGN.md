@@ -45,7 +45,7 @@ User types NL query (or clicks a category)
 | 2 | ConceptMatcher | `CONCEPT_MATCHER` | `match(nl_query) -> list[dict]` (used inside `concept_query`) |
 | 3 | KnowledgeBase | `KNOWLEDGE_BASE` | `execute(sparql) -> list[dict]` |
 | — | ArtifactFetcher | `ARTIFACT_FIELDS_FILE` | `fetch(ids) -> list[Artifact]` (infrastructure, configured per graph) |
-| 4 | SelectionStrategy | `SELECTION` | `select(pool, n, history) -> list[dict]` |
+| 4 | SelectionStrategy | `SELECTION` | `select(pool, n, history) -> list[dict]` (`relevance_feedback` uses the Representation module) |
 | 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
 | 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
 | 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
@@ -196,7 +196,31 @@ class SelectionStrategy(ABC):
     def select(self, pool: list[dict], n: int, history: SelectionHistory) -> list[dict]: ...
 ```
 
-The random baseline filters `seen` items, then `random.sample(remaining, n)`. A future active-learning implementation uses `accepted` item properties to re-score the pool before sampling.
+The random baseline filters `seen` items, then `random.sample(remaining, n)`.
+
+#### Relevance feedback (`SELECTION=relevance_feedback`)
+
+`RelevanceFeedbackStrategy` re-ranks the unseen pool after every batch from the curator's feedback, using the Representation module's vectors (§8), which `config.py` injects. Feedback accumulates over the query:
+
+- **Positives P**: `history.accepted` plus the selection bank, since an item can be kept after going back to an earlier batch. With `RERANK_CROSS_QUERY=false`, only kept items that are in the current pool count.
+- **Negatives N**: `history.rejected` minus P. "Shown but not kept" is a weak signal, so N weighs less (`RERANK_GAMMA=0.25` against `RERANK_BETA=1.0`).
+
+Each unseen candidate with a vector is scored, in the `RERANK_VIEW` space:
+
+| `RERANK_SCORING` | Score |
+|--|--|
+| `rocchio` (default) | `c · (β·centroid(P) − γ·centroid(N))` |
+| `knn` | `β · mean top-k sim(c, P) − γ · mean top-k sim(c, N)` (`RERANK_K`); better when the selection has several themes |
+
+A batch of n has `round(RERANK_EXPLORE·n)` random candidates (default 2 of 10), so feedback keeps coming from the rest of the pool. The other slots are picked greedily by MMR, `argmax λ·s(c) − (1−λ)·max sim(c, picked)` (`RERANK_MMR_LAMBDA=0.7`), so they are not near-duplicates. The batch is shuffled, so ranked and explored items cannot be told apart by position. Scores are written to `item["score"]`.
+
+Vectors are filled in the background, so the strategy:
+- ranks only the candidates that already have a vector and fills the free slots at random;
+- waits at most `RERANK_WAIT` seconds for the feedback items' own vectors, which are usually ready because `/search` and `/next` call `prioritize` on the batch on screen.
+
+Without feedback (the first batch of a query), without encoded feedback, or without the Representation module, it selects at random. What it did (mode, |P|, |N|, coverage, ranked and explored ids, scores) goes into the `rerank` field of the `search` and `next` log records.
+
+To compare it offline with random selection, run `python -m modules.selection.relevance_feedback <pool.json | export.json | runs.log> --target <concept URI>`. A simulated curator keeps the objects that have the target type, material or place. The command prints the acceptance rate, cumulative recall and batch diversity per batch. Without `--target`, it lists the most common concepts in the pool.
 
 ---
 
@@ -299,8 +323,8 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 
 ```python
 class RunLogger:
-    def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None) -> None: ...
-    def log_next(self, history: dict, displayed: list) -> None: ...
+    def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None, rerank: dict = None) -> None: ...
+    def log_next(self, history: dict, displayed: list, rerank: dict = None) -> None: ...
     def log_export(self, items: list, meta: dict) -> None: ...
 ```
 
@@ -366,7 +390,7 @@ Configuration lives in two files:
 QUERY_GENERATION=category_select   # category_select | concept_query
 CONCEPT_MATCHER=thesaurus          # used by concept_query
 KNOWLEDGE_BASE=sparql_endpoint
-SELECTION=random
+SELECTION=random                   # random | relevance_feedback
 EXPORTER=json
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
 REPRESENTATION=                    # embeddinggemma | blank = off
@@ -395,7 +419,8 @@ REGISTRY = {
         "rdf_file":        "modules.knowledge_base.rdf_file.RDFFile",
     },
     "selection": {
-        "random": "modules.selection.random_strategy.RandomStrategy",
+        "random":             "modules.selection.random_strategy.RandomStrategy",
+        "relevance_feedback": "modules.selection.relevance_feedback.RelevanceFeedbackStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -409,7 +434,7 @@ REGISTRY = {
 }
 ```
 
-Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator; `_build_representation` wraps the encoder in a `RepresentationService` with the shared ImageCache.
+Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator; `_build_representation` wraps the encoder in a `RepresentationService` with the shared ImageCache, and `_build_selection` injects that service into `relevance_feedback`.
 
 Adding a new implementation = add one registry entry + set the env var (plus a `_build_*` branch if it needs constructor args). No other files change.
 
@@ -574,7 +599,8 @@ museum_curation/
 │   │   └── rdf_file.py                  # local TTL/RDF file via rdflib
 │   ├── selection/
 │   │   ├── _stub.py
-│   │   └── random_strategy.py           # random.sample(unseen, n)
+│   │   ├── random_strategy.py           # random.sample(unseen, n)
+│   │   └── relevance_feedback.py        # re-ranks by feedback on the vectors (+ simulation CLI)
 │   ├── retrieval_evaluator/
 │   │   ├── _stub.py
 │   │   ├── base.py                      # FeatureEncoder, MetricsCalculator, SurpriseCalculator ABCs
@@ -668,7 +694,7 @@ Switching to a different graph = create a new `collections/<graph>/` folder, poi
 
 - LLM- or embedding-based ConceptMatcher (interface ready, impl deferred)
 - Relaxed retrieval and MMR-style diversity-aware selection (see the diversity design doc)
-- Scored / active-learning SelectionStrategy (interface + score field ready, impl deferred; the Representation memory banks provide the vectors)
+- Using the query text as a ranking anchor, so the first batch of a query is ranked rather than random
 - Object validation
 - User accounts or persistent sessions
 - Docker / container deployment
