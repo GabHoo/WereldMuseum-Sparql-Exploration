@@ -4,4 +4,5 @@ python-dotenv>=1.0
 rdflib>=6.0
 Pillow>=9.0
 imagehash>=4.3
-sentence-transformers>=2.6
+sentence-transformers>=6.1   # multimodal encode() for EmbeddingGemma 2
+torchvision                  # image processor of EmbeddingGemma 2

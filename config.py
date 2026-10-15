@@ -41,6 +41,9 @@ REGISTRY = {
     "retrieval_evaluator": {
         "diversity": "modules.retrieval_evaluator.diversity_evaluator.DiversityEvaluator",
     },
+    "representation": {
+        "embeddinggemma": "modules.representation.embeddinggemma.EmbeddingGemmaEncoder",
+    },
 }
 
 
@@ -133,12 +136,30 @@ def _build_retrieval_evaluator(key: str, knowledge_base):
     raise ValueError(f"Unknown retrieval_evaluator key: {key!r}")
 
 
+def _build_representation(key: str, image_cache):
+    # Imports are inside the function so the embedding model is not loaded
+    # unless REPRESENTATION is explicitly set in .env.
+    from modules.representation.memory_bank import RepresentationService
+    if key == "embeddinggemma":
+        from modules.representation.embeddinggemma import build_from_env
+        encoder = build_from_env()
+    else:
+        encoder = _load_class("representation", key)()
+    return RepresentationService(
+        encoder,
+        image_cache,
+        batch_size=int(os.getenv("REPRESENTATION_BATCH_SIZE", "8")),
+        cache_size=int(os.getenv("REPRESENTATION_CACHE_SIZE", "5000")),
+    )
+
+
 def build_modules() -> dict:
     qg_key  = os.getenv("QUERY_GENERATION", "category_select")
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
     sel_key = os.getenv("SELECTION", "random")
     exp_key = os.getenv("EXPORTER", "json")
     re_key  = os.getenv("RETRIEVAL_EVALUATOR", "").strip()
+    rep_key = os.getenv("REPRESENTATION", "").strip()
 
     knowledge_base = _build_knowledge_base(kb_key)
     modules = {
@@ -153,4 +174,6 @@ def build_modules() -> dict:
     }
     if re_key:
         modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)
+    if rep_key:
+        modules["representation"] = _build_representation(rep_key, modules["image_cache"])
     return modules

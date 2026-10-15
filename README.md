@@ -32,6 +32,7 @@ KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
 SELECTION=random                  # random
 EXPORTER=json                     # json
 RETRIEVAL_EVALUATOR=              # diversity | blank = off
+REPRESENTATION=                   # embeddinggemma | blank = off
 ```
 
 ### Search results
@@ -69,6 +70,10 @@ KEYWORD_MATCHING_THESAURUS_FILES=collections/wereld_museum/thesaurus1.csv,collec
 ```
 Expected columns: `concept, prefLabel, broad, altLabels` (altLabels pipe-separated).
 
+### Representation
+
+`REPRESENTATION=embeddinggemma` embeds every search result (image + metadata) with [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) in the background and keeps the vectors in memory: a *search bank* that is replaced on each new query, and a *selection bank* of kept objects that persists. `REPRESENTATION_VIEWS` picks the vectors per object (`fused` by default; also `image`, `text`). Progress: `GET /representations/status`. See DESIGN.md §8.
+
 ---
 
 ## Add a new module implementation
@@ -95,6 +100,7 @@ modules/
   knowledge_base/   SPARQL execution backends
   selection/        Item selection strategies
   retrieval_evaluator/ Optional pool diversity / surprise metrics
+  representation/   Optional object embeddings + memory banks (EmbeddingGemma 2)
   exporter/         Export formats
   exhibition_builder/ Downstream exhibition layouts (skeleton)
 templates/

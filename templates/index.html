@@ -937,6 +937,18 @@
     featureStats.hidden = false;
   }
 
+  /* ── Selection memory bank ──────────────────────────────────────────── */
+  // Mirror the kept items to the server's selection bank (Representation
+  // module; a no-op when it is disabled). Fire-and-forget: the full list is
+  // sent each time, so a lost request is repaired by the next one.
+  function syncSelection() {
+    fetch('/selection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: selected }),
+    }).catch(() => {});
+  }
+
   /* ── Keep ───────────────────────────────────────────────────────────── */
   function keepItem(item, btn, card) {
     selected.push(item);
@@ -944,6 +956,7 @@
     btn.disabled    = true;
     btn.textContent = '✓ Kept';
     renderSelected();
+    syncSelection();
   }
 
   /* ── Remove from selected ───────────────────────────────────────────── */
@@ -954,6 +967,7 @@
     const accIdx = serverHistory.accepted.indexOf(itemId);
     if (accIdx !== -1) serverHistory.accepted.splice(accIdx, 1);
     serverHistory.rejected.push(itemId);
+    syncSelection();
     // Restore card in pool if currently visible
     const card = poolGrid.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
     if (card) {
@@ -1015,6 +1029,8 @@
     batches       = [];
     batchIdx      = -1;
     serverHistory = { accepted: [], rejected: [], seen: [] };
+    // One id per search: parallel category requests fill one search bank.
+    const searchId = Date.now() + '-' + Math.random().toString(36).slice(2);
 
     try {
       let firstPool, firstDisplayed, firstSparql, firstMetrics = null;
@@ -1023,7 +1039,7 @@
         const r = await fetch('/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: queries[0], n: N }),
+          body: JSON.stringify({ query: queries[0], n: N, search_id: searchId }),
         });
         const d = await r.json();
         if (!r.ok) { renderConcepts(d.concepts || []); throw new Error(d.error || 'Search failed'); }
@@ -1039,7 +1055,7 @@
           fetch('/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: q, n: N }),
+            body: JSON.stringify({ query: q, n: N, search_id: searchId }),
           }).then(r => r.json())
         ));
         firstPool   = mergePools(results.map(d => d.pool));
@@ -1154,6 +1170,7 @@
   prevBtn.addEventListener('click', prevBatch);
   nextBtn.addEventListener('click', nextBatch);
   exportBtn.addEventListener('click', doExport);
+  syncSelection();   // a fresh page has nothing kept: clear a stale selection bank
 
   if (MODE === 'category_select') {
     let selectedCats = new Set();

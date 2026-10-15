@@ -22,6 +22,9 @@ User types NL query (or clicks a category)
         │                        [ArtifactFetcher] ──FETCH query──▶ Artifact objects ──▶ pool
         │                                    │      (same fields for every object, lists for multi-values)
         └─ query features ─▶ [RetrievalEvaluator] ◀── pool   (optional: diversity / surprise)
+                                             │
+                         pool ─▶ [Representation] ─▶ search bank     (optional, background:
+                         kept ─▶                 ─▶ selection bank   EmbeddingGemma 2 vectors)
                                              ▼
                        [SelectionStrategy] ──picks N (~10)──▶ items shown to user
                                              │
@@ -46,8 +49,9 @@ User types NL query (or clicks a category)
 | 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
 | 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
 | 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
+| 8 | Representation | `REPRESENTATION` | `ObjectEncoder.encode(objects) -> [{view: vector}]`, held in memory banks (optional) |
 
-All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`).
+All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`, the ObjectEncoder in `modules/representation/base.py`).
 
 ### 1. QueryGeneration
 
@@ -302,6 +306,54 @@ class RunLogger:
 
 Each record automatically gets a `timestamp` field (UTC ISO-8601).
 
+### 8. Representation (optional)
+
+Embeds collection objects (image + metadata) as vectors and keeps them in memory for downstream tasks such as re-ranking and recommendation. Enabled by setting `REPRESENTATION=embeddinggemma`; when unset, the model is never loaded and nothing else changes. Everything lives in `modules/representation/`.
+
+**Encoder.** `EmbeddingGemmaEncoder` uses [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) (`REPRESENTATION_MODEL`), which maps text and images into one 768-d space. Per object it computes the configured views (`REPRESENTATION_VIEWS`, default `fused`):
+
+| View | Input |
+|------|-------|
+| `fused` | metadata text + `<\|image\|>` with the object's image, as one input (text only if no image is available) |
+| `image` | the image alone |
+| `text` | the metadata text alone |
+
+The text is in the model's document format: `title: <title> | text: type: …; material: …; place: …; date: …; maker: …; intended use: …; description: …` (description cut at 500 characters). The image is the first non-placeholder image, taken from ImageCache's on-disk thumbnail, so no second download path exists. Vectors are L2-normalised, so cosine similarity is a dot product; `REPRESENTATION_DIM` truncates them (Matryoshka: 512 / 256 / 128) and re-normalises. The audio encoder is never loaded; float16 is refused because it silently breaks this model.
+
+**Cost.** Images dominate: at the model's default 280 vision tokens per image, a fused vector takes ~0.8 s per object on Apple MPS (~3× slower on CPU), so a 100-object pool fills in ~1.5 min; text-only is ~100× cheaper. `REPRESENTATION_IMAGE_TOKENS=140` (or `70`) is ~2× (~4×) faster, with vectors at cosine ~0.98 (~0.97) to the default ones. The worker fetches each batch's thumbnails 4 at a time.
+
+```python
+class ObjectEncoder(ABC):
+    views: tuple                      # subset of ("fused", "image", "text")
+    def encode(self, objects: list[dict]) -> list[dict]: ...   # [{id, text, image_path}] → [{view: vec}]
+    def object_text(self, properties: dict) -> str: ...       # Artifact dict → text to embed
+```
+
+**Memory banks.** `RepresentationService` (`memory_bank.py`) holds two `MemoryBank`s:
+
+| Bank | Holds | Refresh |
+|------|-------|---------|
+| search bank | the pool of the current query | replaced on every new query (`/search` with a new `search_id`); calls with the same `search_id` — the parallel requests of a multi-category search — add to it |
+| selection bank | the objects the curator kept | persists across queries; mirrors the browser's `selected` list via `POST /selection` (full list each time, so it is idempotent and a page reload clears it) |
+
+Encoding runs on one background thread in batches (`REPRESENTATION_BATCH_SIZE`), so `/search` is as fast as without the module. Selection batches go first; batches of a superseded query are skipped. Vectors are cached per object id (LRU, `REPRESENTATION_CACHE_SIZE`), so a kept item, normally already encoded as a search result, is not encoded again, and objects returning in later queries are free.
+
+**Using the banks** (e.g. from a future SelectionStrategy, which gets the service injected in `config.py`):
+
+```python
+rep = MODULES["representation"]
+ids, mat = rep.search_bank.matrix("fused")       # rows follow pool order
+taste    = rep.selection_bank.centroid("fused")  # None while nothing is kept
+scores   = mat @ taste                           # similarity of each result to the selection
+rep.similarity("fused", ids, rep.selection_bank) # items × kept items
+rep.wait("search", timeout=30)                   # block until the search bank is encoded
+rep.status()                                     # {search: {total, done, ready}, selection: {…}}
+```
+
+**State.** This is the one place where the server keeps state between requests. It assumes one curator per server process; every method takes a `session` argument (only `"default"` is used) so per-user banks can be added later.
+
+CLI check, without the app: `python -m modules.representation.embeddinggemma export.json [--k 3]` embeds an export and prints each object's nearest neighbours per view.
+
 ---
 
 ## Default Configuration & Implementation Selection
@@ -316,6 +368,7 @@ KNOWLEDGE_BASE=sparql_endpoint
 SELECTION=random
 EXPORTER=json
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
+REPRESENTATION=                    # embeddinggemma | blank = off
 ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json
 
 # Module settings (only the relevant ones are used)
@@ -349,10 +402,13 @@ REGISTRY = {
     "retrieval_evaluator": {
         "diversity": "modules.retrieval_evaluator.diversity_evaluator.DiversityEvaluator",
     },
+    "representation": {
+        "embeddinggemma": "modules.representation.embeddinggemma.EmbeddingGemmaEncoder",
+    },
 }
 ```
 
-Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator.
+Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator; `_build_representation` wraps the encoder in a `RepresentationService` with the shared ImageCache.
 
 Adding a new implementation = add one registry entry + set the env var (plus a `_build_*` branch if it needs constructor args). No other files change.
 
@@ -480,14 +536,16 @@ Infrastructure behind `/thumb`. On the first request for an image URL it downloa
 
 ## Flask API (stateless server)
 
-**State lives entirely in the browser** (pool, history, current display). The server is a pure function: same inputs → same outputs.
+**State lives entirely in the browser** (pool, history, current display). The server is a pure function: same inputs → same outputs. The one exception is the optional Representation module's memory banks (§8), which only observe the pool and the selection and never change a response.
 
 | Method | Path | Request body | Response |
 |--------|------|-------------|----------|
 | `GET` | `/` | — | Serves `index.html` |
-| `POST` | `/search` | `{ query: str, n: int }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
+| `POST` | `/search` | `{ query: str, n: int, search_id?: str }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
 | `POST` | `/next` | `{ pool: [...], n: int, history: {...} }` | `{ displayed: [...], pool: [...] }` |
 | `POST` | `/export` | `{ items: [...], meta: {...} }` | JSON file download |
+| `POST` | `/selection` | `{ items: [...] }` — all kept items | Representation status, or `{enabled: false}` |
+| `GET` | `/representations/status` | — | `{enabled, views, search: {total, done, ready}, selection: {…}}` |
 | `GET` | `/thumb?url=…` | — | Cached JPEG thumbnail; `404` if the image is a placeholder, `403` if the host is not allowed, `502` if it can't be fetched |
 
 ---
@@ -524,6 +582,11 @@ museum_curation/
 │   │   ├── metrics_calculator.py        # diversity (pairwise embedding distance)
 │   │   ├── surprise_calculator.py       # surprise (items outside the searched concepts)
 │   │   └── diversity_recommender_design.md
+│   ├── representation/                  # optional: object embeddings + memory banks
+│   │   ├── base.py                      # ObjectEncoder ABC
+│   │   ├── _stub.py
+│   │   ├── embeddinggemma.py            # EmbeddingGemma 2 encoder (+ CLI)
+│   │   └── memory_bank.py               # MemoryBank, RepresentationService (background worker)
 │   ├── exporter/
 │   │   ├── _stub.py
 │   │   └── json_exporter.py
@@ -604,7 +667,7 @@ Switching to a different graph = create a new `collections/<graph>/` folder, poi
 
 - LLM- or embedding-based ConceptMatcher (interface ready, impl deferred)
 - Relaxed retrieval and MMR-style diversity-aware selection (see the diversity design doc)
-- Scored / active-learning SelectionStrategy (interface + score field ready, impl deferred)
+- Scored / active-learning SelectionStrategy (interface + score field ready, impl deferred; the Representation memory banks provide the vectors)
 - Object validation
 - User accounts or persistent sessions
 - Docker / container deployment

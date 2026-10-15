@@ -105,6 +105,14 @@ def search():
     # Build the pool of candidates that the selection mechanism can rank. This
     # step also strips placeholder images and removes artifacts without usable images.
     pool = _build_pool(artifacts)
+
+    # Optional representations: embed the pool in the background into the
+    # search bank. A new search_id replaces the bank (also when the pool is
+    # empty); the same one adds to it.
+    representation = MODULES.get("representation")
+    if representation:
+        representation.on_search(pool, data.get("search_id"))
+
     if not pool:
         # If no valid artifacts remain after filtering, return an empty pool while
         # still including the underlying SPARQL and concepts for debugging.
@@ -135,6 +143,22 @@ def next_batch():
     displayed = MODULES["selection"].select(pool, n, history)
     MODULES["logger"].log_next(data.get("history", {}), displayed)
     return jsonify({"displayed": displayed, "pool": pool})
+
+
+@app.route("/selection", methods=["POST"])
+def selection():
+    """Mirror the browser's kept items into the selection memory bank."""
+    representation = MODULES.get("representation")
+    if not representation:
+        return jsonify({"enabled": False})
+    data = request.get_json(silent=True) or {}
+    return jsonify(representation.sync_selection(data.get("items", [])))
+
+
+@app.route("/representations/status")
+def representations_status():
+    representation = MODULES.get("representation")
+    return jsonify(representation.status() if representation else {"enabled": False})
 
 
 @app.route("/export", methods=["POST"])
