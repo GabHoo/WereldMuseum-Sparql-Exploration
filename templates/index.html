@@ -579,6 +579,61 @@
     .err { color: #c04848; font-size: 0.7rem; margin-top: 12px; }
 
     #pool-section[hidden] { display: none; }
+
+    /* ── Chatbox Assistant ──────────────────────────────────────────────── */
+    #chat-section {
+      margin-top: 40px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      padding: 18px;
+    }
+
+    #chat-window {
+      height: 300px;
+      overflow-y: auto;
+      border: 1px solid #c8bfaf;
+      background: #fff;
+      padding: 12px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .chat-msg {
+      max-width: 85%;
+      padding: 8px 12px;
+      line-height: 1.4;
+    }
+
+    .chat-msg.user {
+      align-self: flex-end;
+      background: var(--selected-bg);
+      border: 1px solid var(--selected-border);
+    }
+
+    .chat-msg.assistant {
+      align-self: flex-start;
+      background: var(--surface);
+      border: 1px solid #c8bfaf;
+    }
+
+    #chat-form {
+      display: flex;
+      gap: 12px;
+    }
+
+    #chat-input {
+      flex-grow: 1;
+      background: #fff;
+      border: 1px solid #b0a490;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      padding: 8px 12px;
+      outline: none;
+    }
+
+    #chat-input:focus { border-color: var(--accent); }
   </style>
 </head>
 <body>
@@ -649,6 +704,23 @@
   </div>
 
   <div id="err-area"></div>
+
+  <!-- ── Chatbox Assistant Section ────────────────────────────────────── -->
+    <section id="chat-section">
+      <div class="section-meta">
+        <span class="section-label">🏛️ AI Curation Assistant</span>
+        <span class="section-stat" id="chat-status">Llama 3.2 lokaal actief</span>
+      </div>
+
+      <div id="chat-window">
+        <div class="chat-msg assistant">Hi! I am your Museum Curator Assistant. Send me 'summary' to get the commonalities and differences of the selected items.</div>
+      </div>
+
+      <form id="chat-form" onsubmit="sendMessage(event)">
+        <input type="text" id="chat-input" placeholder="Stel een vraag aan de AI..." autocomplete="off">
+        <button type="submit" class="search-btn">Verstuur</button>
+      </form>
+    </section>
 </main>
 
 <script>
@@ -1261,4 +1333,60 @@
 
 </script>
 </body>
+
+<script>
+    async function sendMessage(event) {
+    event.preventDefault();
+    const inputEl = document.getElementById('chat-input');
+    const windowEl = document.getElementById('chat-window');
+    const text = inputEl.value.trim();
+
+    if (!text) return;
+
+    // 1. Toon het bericht van de gebruiker in de chatbox UI
+    windowEl.innerHTML += `<div class="chat-msg user">${text}</div>`;
+    inputEl.value = '';
+    windowEl.scrollTop = windowEl.scrollHeight;
+
+    // Maak een tijdelijke 'aan het laden' indicator
+    const botMsgId = 'msg-' + Date.now();
+    windowEl.innerHTML += `<div class="chat-msg assistant" id="${botMsgId}">...</div>`;
+    windowEl.scrollTop = windowEl.scrollHeight;
+
+    // 2. Verzamel de huidige tentoonstellingsdata (hetzelfde als bij export)
+    // Let op: vervang 'huidigeItemsArray' en 'huidigeMetaNaam' door de echte variabelen
+    // die jouw frontend gebruikt om de geselecteerde objecten in de UI bij te houden.
+    const currentItems = typeof pool !== 'undefined' ? pool : []; // OF de variabele van je geselecteerde/displayed items
+    const currentMeta = {
+      source: "chatbox_trigger",
+      timestamp: new Date().toISOString()
+    };
+
+    try {
+      // 3. Verstuur het bericht EN de tentoonstellingsdata naar de Flask backend
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          items: selected,  // Dit activeert de export op de achtergrond
+          meta: currentMeta
+        })
+      });
+
+      const data = await response.json();
+      const botCell = document.getElementById(botMsgId);
+
+      if (response.ok && data.reply) {
+        botCell.innerText = data.reply;
+      } else {
+        botCell.innerText = "Fout van server: " + (data.error || "Onbekende fout");
+      }
+    } catch (error) {
+      document.getElementById(botMsgId).innerText = "Fout: Kan geen verbinding maken met de backend.";
+    }
+    windowEl.scrollTop = windowEl.scrollHeight;
+  }
+</script>
+
 </html>

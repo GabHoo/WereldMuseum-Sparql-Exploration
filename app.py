@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime, timezone
 
@@ -6,6 +7,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request, sen
 import config
 from modules.artifact import Artifact
 from modules.base import SelectionHistory
+from modules.selection.textual_interaction import generate_chat_response
 
 app = Flask(__name__)
 MODULES = config.build_modules()
@@ -154,6 +156,59 @@ def export():
         mimetype="application/json",
         headers={"Content-Disposition": "attachment; filename=exhibition.json"},
     )
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    """Route die de tentoonstelling exporteert naar bestand en de data meegeeft aan Llama."""
+    data = request.get_json(silent=True) or {}
+    user_message = data.get("message", "").strip()
+    items = data.get("items", [])
+    meta = data.get("meta", {})
+
+    if not user_message:
+        return jsonify({"error": "Message is required"}), 400
+
+    context_prefix = ""
+
+    json_string_context = None
+
+    # Als er items in de huidige sessie zijn, trigger dan de JSON-export op de achtergrond
+    if items:
+        try:
+            # 1. Log de export (net als in de /export route)
+            MODULES["logger"].log_export(items, meta)
+
+            # 2. Genereer de JSON payload via de bestaande exporter
+            payload = MODULES["exporter"].export(items, meta)
+
+            # 3. Sla het bestand fysiek op als 'exhibition.json' in je werkmap
+            export_filename = "exhibition.json"
+            with open(export_filename, "wb") as f:
+                f.write(payload if isinstance(payload, bytes) else payload.encode('utf-8'))
+
+            # 4. Lees het bestand direct weer in als tekst-context voor het LLM
+            with open(export_filename, "r", encoding="utf-8") as f:
+                exhibition_data = json.load(f)
+
+            # Formatteer dit compact voor het model
+            json_string = json.dumps(exhibition_data, indent=2, ensure_ascii=False)
+            context_prefix = f"[Systeem info: exhibition.json is succesvol opgeslagen]\nHier is de huidige tentoonstellingsdata uit exhibition.json:\n```json\n{json_string}\n```\n\nGebruikersvraag over deze data: "
+
+        except Exception as e:
+            print(f"Achtergrond export mislukt: {str(e)}")
+            # We gaan door, maar zonder de bestandscontext
+            context_prefix = "[Systeem info: Automatische export naar exhibition.json mislukt]\n"
+
+    try:
+        # Combineer de bestandsinhoud met de vraag van de gebruiker
+        full_message = f"{context_prefix}{user_message}"
+
+        # Roep de functie aan uit textual_interaction.py
+        reply = generate_chat_response(full_message)
+        return jsonify({"reply": reply})
+    except Exception as e:
+        return jsonify({"error": f"Llama Error: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
