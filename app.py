@@ -122,6 +122,8 @@ def search():
     # fresh state, then ask the selector to choose the next N items.
     history = SelectionHistory()
     displayed = MODULES["selection"].select(pool, n, history)
+    if representation:
+        representation.prioritize([item["id"] for item in displayed])
 
     # Optional retrieval evaluation: score the current pool against the query
     # features when an evaluator is configured.
@@ -141,6 +143,9 @@ def next_batch():
     history = SelectionHistory.from_dict(data.get("history", {}))
 
     displayed = MODULES["selection"].select(pool, n, history)
+    representation = MODULES.get("representation")
+    if representation:
+        representation.prioritize([item["id"] for item in displayed])
     MODULES["logger"].log_next(data.get("history", {}), displayed)
     return jsonify({"displayed": displayed, "pool": pool})
 

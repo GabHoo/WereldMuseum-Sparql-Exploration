@@ -12,6 +12,8 @@ re-ranking SelectionStrategy) talks to:
                                  Calls with the same search_id add to it instead
                                  (multi-category searches send parallel /search
                                  calls whose pools the browser merges).
+    prioritize(ids)              encode these search-bank items (the displayed
+                                 batch) before the rest of the pool.
     sync_selection(items)        mirror the browser's full "selected" list.
     search_bank / selection_bank MemoryBank: matrix(view), centroid(view), get(id), …
     vector(id, view)             one item's vector (from a bank or the cache)
@@ -41,7 +43,8 @@ from modules.representation.base import ObjectEncoder
 log = logging.getLogger(__name__)
 
 _PRIORITY_SELECTION = 0
-_PRIORITY_SEARCH = 1
+_PRIORITY_DISPLAYED = 1   # the batch on screen: feedback needs it encoded first
+_PRIORITY_SEARCH = 2
 _IMAGE_FETCHERS = 4   # parallel thumbnail downloads per batch, as the browser preload
 
 
@@ -172,6 +175,20 @@ class RepresentationService:
             generation = s.generation
             s.search_bank.add(pool, self._cached(item["id"] for item in pool))
         self._enqueue(_PRIORITY_SEARCH, session, "search", generation, s.search_bank.pending())
+
+    def prioritize(self, ids: list, session: str = "default") -> int:
+        """
+        Encode these search-bank items before the rest of the pool; returns how
+        many were queued. Unknown or already encoded ids are skipped. The items'
+        original pool batches stay queued but find them cached, so nothing is
+        encoded twice. The batch being encoded right now is not interrupted.
+        """
+        s = self.session(session)
+        with s.lock:
+            generation = s.generation
+            items = [e["item"] for e in map(s.search_bank.get, ids) if e and e["vectors"] is None]
+        self._enqueue(_PRIORITY_DISPLAYED, session, "search", generation, items)
+        return len(items)
 
     def sync_selection(self, items: list, session: str = "default") -> dict:
         """

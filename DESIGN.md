@@ -336,7 +336,7 @@ class ObjectEncoder(ABC):
 | search bank | the pool of the current query | replaced on every new query (`/search` with a new `search_id`); calls with the same `search_id` — the parallel requests of a multi-category search — add to it |
 | selection bank | the objects the curator kept | persists across queries; mirrors the browser's `selected` list via `POST /selection` (full list each time, so it is idempotent and a page reload clears it) |
 
-Encoding runs on one background thread in batches (`REPRESENTATION_BATCH_SIZE`), so `/search` is as fast as without the module. Selection batches go first; batches of a superseded query are skipped. Vectors are cached per object id (LRU, `REPRESENTATION_CACHE_SIZE`), so a kept item, normally already encoded as a search result, is not encoded again, and objects returning in later queries are free.
+Encoding runs on one background thread in batches (`REPRESENTATION_BATCH_SIZE`), so `/search` is as fast as without the module. Selection batches go first, then the batch on screen (`/search` and `/next` call `prioritize` with the displayed ids, so feedback on it is usable after about two batches rather than at the end of the pool), then the rest of the pool; batches of a superseded query are skipped. Vectors are cached per object id (LRU, `REPRESENTATION_CACHE_SIZE`), so a kept item, normally already encoded as a search result, is not encoded again, and objects returning in later queries are free.
 
 **Using the banks** (e.g. from a future SelectionStrategy, which gets the service injected in `config.py`):
 
@@ -346,6 +346,7 @@ ids, mat = rep.search_bank.matrix("fused")       # rows follow pool order
 taste    = rep.selection_bank.centroid("fused")  # None while nothing is kept
 scores   = mat @ taste                           # similarity of each result to the selection
 rep.similarity("fused", ids, rep.selection_bank) # items × kept items
+rep.prioritize(ids)                              # encode these search results next
 rep.wait("search", timeout=30)                   # block until the search bank is encoded
 rep.status()                                     # {search: {total, done, ready}, selection: {…}}
 ```
