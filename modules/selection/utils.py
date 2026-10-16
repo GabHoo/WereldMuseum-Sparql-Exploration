@@ -2,6 +2,7 @@
 Helpers shared by selection strategies.
 
     unseen(pool, history)             items not shown yet
+    empty_streak(history, n)          consecutive latest batches without a keep
     largest_remainder(weights, total) split slots proportionally, in whole numbers
     metadata_linearization(fields)    item → one text line from Artifact fields
 """
@@ -15,6 +16,19 @@ def unseen(pool: list, history: SelectionHistory) -> list:
     """Pool items that have not been shown yet, in pool order."""
     seen = set(history.seen)
     return [item for item in pool if item["id"] not in seen]
+
+
+def empty_streak(history: SelectionHistory, n: int) -> int:
+    """
+    Number of most recent batches (of size n) in which nothing was kept.
+    history.seen lists shown ids in display order, so the streak is the number
+    of full batches shown after the last kept item (or since the start).
+    """
+    if n <= 0:
+        return 0
+    accepted = set(history.accepted)
+    last_keep = max((i for i, x in enumerate(history.seen) if x in accepted), default=-1)
+    return (len(history.seen) - (last_keep + 1)) // n
 
 
 def largest_remainder(weights: dict, total: int) -> dict:

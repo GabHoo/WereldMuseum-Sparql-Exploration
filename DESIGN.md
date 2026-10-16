@@ -200,6 +200,7 @@ class SelectionStrategy(ABC):
 | Piece | File | What it does |
 |-------|------|--------------|
 | `unseen(pool, history)` | `modules/selection/utils.py` | items not shown yet |
+| `empty_streak(history, n)` | `modules/selection/utils.py` | batches in a row (latest first) without a keep |
 | `metadata_linearization(fields)` | `modules/selection/utils.py` | returns item → one text line from the given Artifact fields (validated at startup) |
 | `largest_remainder(weights, total)` | `modules/selection/utils.py` | splits a number of slots over keys proportionally, in whole numbers |
 | `Clusterer` / `KMeansClusterer` | `modules/selection/clustering.py` | vectors → cluster labels (swap in another algorithm by implementing `fit`) |
@@ -214,23 +215,32 @@ class SelectionStrategy(ABC):
 
 #### TitleClusterStrategy (`title_cluster`)
 
-*prepare (once per search):* each item's metadata is linearized into one text by `metadata_linearization(TITLE_CLUSTER_FIELDS)` (default `title`), embedded with the shared `TextEmbedder`, and clustered with k-means into `TITLE_CLUSTER_N_CLUSTERS` clusters (default = batch size, 9). Each item gets `item["selection"] = {"cluster": "<search-id>:<k>", "cluster_label": <most common text in the cluster>}`. The search-id prefix (a hash of the pool's ids) keeps clusters of different searches apart when the browser merges multi-category pools.
+*prepare (once per search):* each item's metadata is linearized into one text by `metadata_linearization(TITLE_CLUSTER_FIELDS)` (default `title`), embedded with the shared `TextEmbedder`, and clustered with k-means into `TITLE_CLUSTER_N_CLUSTERS` clusters (default = 2 × batch size, 18, so clusters remain unshown after the first batch). Each item gets `item["selection"] = {"cluster": "<search-id>:<k>", "cluster_label": <most common text in the cluster>}`. The search-id prefix (a hash of the pool's ids) keeps clusters of different searches apart when the browser merges multi-category pools.
 
 *select (every batch):*
 
 ```
-steered = round(w · n) slots      (w = TITLE_CLUSTER_STEERING_WEIGHT, default 0.6)
+streak  = batches in a row (most recent first) in which nothing was kept   (from history.seen order)
+r       = min(1, s · streak)          (s = TITLE_CLUSTER_SHUFFLE_STEP, default 0.25)
+steered = round(w · (1 − r) · n)      (w = TITLE_CLUSTER_STEERING_WEIGHT, default 0.6)
           only once something is kept: shared over the clusters of history.accepted,
           in proportion to how many items were kept from each (largest remainder)
-explore = the remaining slots: one item per cluster, least-shown clusters first,
+random  = round(r · remaining) slots: uniform over all unseen items, ignoring clusters
+explore = the rest: one item per cluster, least-shown clusters first (never-shown first),
           cycling until the batch is full
 within a cluster: random among its unseen items
-order:  steered items first, then exploration items
+order:  steered, then exploration, then random
 ```
 
-So the first batch (nothing kept) shows one item from each cluster; after the user keeps an item, the next batch holds ~60 % from that item's cluster and ~40 % exploration. `w = 0` never steers; `w = 1` fills the batch from kept clusters, with exploration only when those run out. Paging through without keeping anything shows every pool item exactly once.
+* **First batch** (nothing shown yet): one item from each of 9 of the 18 clusters.
+* **After a keep**: the streak is 0, so ~60 % of the next batch comes from the kept item's cluster(s), the rest explores — never-shown clusters first.
+* **After a batch with no keep**: the next batch prefers the never-shown clusters, and randomness grows by `s` per empty batch in a row — steering towards earlier keeps fades (`w · (1 − r)`) and a growing share of slots is drawn purely at random. With `s = 0.25`, four empty batches in a row make the batch fully random. Any keep resets the streak.
+* `w = 0` never steers; `w = 1` fills the batch from kept clusters. `s = 0` disables the shuffling (empty batches change nothing).
+* Paging through the whole pool shows every item exactly once.
 
-*When a batch has no keeps.* Steering uses **every** item kept so far in this search (`history.accepted` is cumulative), not just the last batch: if something was kept earlier, the next batch is still steered towards it; if nothing was ever kept, the batch is pure exploration. Not keeping something is **not** a negative signal — rejected items' clusters are not avoided. Exploration simply prefers the least-shown clusters, and with `n_clusters = n` every exploration batch covers all clusters once. A kept cluster that runs out of unseen items stops receiving steered slots, and exploration fills them.
+Simulated on the *masker* pool (95 objects, 18 clusters), a curator who never keeps: batch 2 shows 8 never-shown clusters, then `r` = 0.25 → 0.50 → 0.75 → 1.0. Keeping in batch 1, nothing in 2–4, keeping again in 5: steering fades to 0 and returns right after the second keep.
+
+*Trade-off: number of clusters.* More clusters leave unshown clusters to rotate to, but make clusters small: with 18 clusters the *masker* pool's sizes are 17, 15, 13, 9, 8, 5, 4, 3, 3, 3, 3, 3, 2, 2, 2, 1, 1, 1. Keeping an item from a cluster of 3 can steer at most 2 more cards; the remaining steered slots fall back to exploration. `TITLE_CLUSTER_N_CLUSTERS=9` gives bigger clusters (stronger steering) but nothing left unshown after batch 1.
 
 *Choosing the text (`TITLE_CLUSTER_FIELDS`).* A comma-separated list of Artifact fields; their values are joined with ` · ` (list fields contribute all values joined with `, `, empty fields are skipped). Field names are checked against `Artifact` at startup.
 
@@ -373,6 +383,7 @@ EXPORTER=json
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
 TITLE_CLUSTER_FIELDS=title         # used by SELECTION=title_cluster
 TITLE_CLUSTER_STEERING_WEIGHT=0.6
+TITLE_CLUSTER_SHUFFLE_STEP=0.25
 ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json
 
 # Module settings (only the relevant ones are used)

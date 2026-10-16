@@ -98,8 +98,9 @@ def _build_selection(key: str):
             embedder=TextEmbedder(os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL)),
             clusterer=KMeansClusterer(),
             linearize=metadata_linearization(os.getenv("TITLE_CLUSTER_FIELDS", "title")),
-            n_clusters=int(os.getenv("TITLE_CLUSTER_N_CLUSTERS", str(N_PER_BATCH))),
+            n_clusters=int(os.getenv("TITLE_CLUSTER_N_CLUSTERS", str(2 * N_PER_BATCH))),
             steering_weight=float(os.getenv("TITLE_CLUSTER_STEERING_WEIGHT", "0.6")),
+            shuffle_step=float(os.getenv("TITLE_CLUSTER_SHUFFLE_STEP", "0.25")),
         )
     return cls()
 
