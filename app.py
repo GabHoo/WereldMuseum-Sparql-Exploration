@@ -113,6 +113,7 @@ def search():
     # Reset selection history for this request so the first batch is chosen from a
     # fresh state, then ask the selector to choose the next N items.
     history = SelectionHistory()
+    MODULES["selection"].prepare(pool)   # per-search work, e.g. clustering
     displayed = MODULES["selection"].select(pool, n, history)
 
     # Optional retrieval evaluation: score the current pool against the query

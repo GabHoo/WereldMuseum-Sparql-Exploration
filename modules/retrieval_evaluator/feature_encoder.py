@@ -18,7 +18,7 @@ Model: paraphrase-multilingual-mpnet-base-v2
   paraphrase-multilingual-MiniLM-L12-v2  (384-dim, ~2× faster)
 """
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from modules.embedding import load_sentence_model
 
 from modules.retrieval_evaluator.base import FeatureEncoder
 
@@ -49,7 +49,7 @@ class MultilingualFeatureEncoder(FeatureEncoder):
     """
 
     def __init__(self, model_name: str = _DEFAULT_MODEL):
-        self._model = SentenceTransformer(model_name)
+        self._model = load_sentence_model(model_name)  # shared with other modules
         self._text_cache: dict[str, np.ndarray] = {}
 
     # ── Public interface ──────────────────────────────────────────────────────

@@ -102,11 +102,32 @@ class KnowledgeBase(ABC):
 
 
 class SelectionStrategy(ABC):
+    """
+    Decides which pool items the user sees, batch by batch.
+
+    The server keeps no state between requests: the pool travels to the
+    browser and back with every /next call. Anything a strategy needs to
+    remember about an item must therefore be stored *on the item*, as
+    JSON-serialisable data:
+      item["score"]      float, free to use for rankings
+      item["selection"]  dict, free-form annotations written by prepare()
+    Keep annotations small (ids, labels, numbers) — never vectors.
+    """
+
+    def prepare(self, pool: list) -> None:
+        """
+        Called once per /search on the freshly built pool, before the first
+        select(). Use it for per-search work such as embedding or clustering,
+        and store the results in item["selection"]. Default: nothing.
+        """
+
     @abstractmethod
     def select(self, pool: list, n: int, history: SelectionHistory) -> list:
         """
         Pick n items to display from pool, excluding history.seen.
-        May mutate item["score"] to persist rankings across rounds.
+        history.accepted / rejected hold the ids the user kept / passed over.
+        May mutate item["score"] / item["selection"]; the changes travel with
+        the pool into the next call.
         """
 
 

@@ -181,18 +181,75 @@ Picks which N items to show the user from the remaining pool, using feedback his
 
 | | |
 |--|--|
-| **Input** | `pool: list[dict]` — all items from the query, each with a `score: float` field |
+| **Input** | `pool: list[dict]` — all pool items (`id`, `title`, `score`, `properties`, optional `selection`) |
 | | `n: int` — number of items to return |
-| | `history: SelectionHistory` — `accepted: list[str]`, `rejected: list[str]`, `seen: set[str]` (item IDs) |
-| **Output** | `list[dict]` — n items from pool, all with IDs not in `history.seen` |
-| **Side effect** | May mutate `item["score"]` in pool to propagate rankings to the next round |
+| | `history: SelectionHistory` — `accepted` (ids kept so far in this search), `rejected` (shown, not kept), `seen` (every id shown) |
+| **Output** | `list[dict]` — up to n items from pool, none of them in `history.seen` |
+| **Side effect** | May write `item["score"]` / `item["selection"]`; the changes travel with the pool into the next call |
 
 ```python
 class SelectionStrategy(ABC):
+    def prepare(self, pool: list[dict]) -> None: ...                                  # optional, once per /search
     def select(self, pool: list[dict], n: int, history: SelectionHistory) -> list[dict]: ...
 ```
 
-The random baseline filters `seen` items, then `random.sample(remaining, n)`. A future active-learning implementation uses `accepted` item properties to re-score the pool before sampling.
+**State lives on the items.** The server keeps nothing between requests: the pool goes to the browser and comes back with every `/next`. A strategy that needs per-search data (clusters, scores) computes it in `prepare()` — called by `/search` on the fresh pool, before the first `select()` — and stores small, JSON-serialisable results in `item["selection"]`. Never store vectors there (100 × 768 floats would add >1 MB per request); keep them server-side, e.g. in the shared `TextEmbedder` cache. The browser fills `history.accepted` with the ids of kept cards when the user asks for the next batch.
+
+**Reusable building blocks** for new strategies:
+
+| Piece | File | What it does |
+|-------|------|--------------|
+| `unseen(pool, history)` | `modules/selection/common.py` | items not shown yet |
+| `ItemText(spec)` | `modules/selection/item_text.py` | item → text from a field, a field list, or a template (below) |
+| `largest_remainder(weights, total)` | `modules/selection/common.py` | splits a number of slots over keys proportionally, in whole numbers |
+| `Clusterer` / `KMeansClusterer` | `modules/selection/clustering.py` | vectors → cluster labels (swap in another algorithm by implementing `fit`) |
+| `TextEmbedder` | `modules/embedding.py` | cached, normalised text embeddings; the model is loaded once per process and shared with the evaluator |
+
+**Implementations:**
+
+| Name | Key | How it works |
+|------|-----|--------------|
+| `RandomStrategy` | `random` | `random.sample` over unseen items; ignores feedback. |
+| `TitleClusterStrategy` | `title_cluster` | Clusters the pool, shows one item per cluster first, then steers towards the clusters the user keeps from (below). |
+
+#### TitleClusterStrategy (`title_cluster`)
+
+*prepare (once per search):* each item's text is built by `ItemText(TITLE_CLUSTER_TEXT)` (default `title`), embedded with the shared `TextEmbedder`, and clustered with k-means into `TITLE_CLUSTER_N_CLUSTERS` clusters (default = batch size, 9). Each item gets `item["selection"] = {"cluster": "<search-id>:<k>", "cluster_label": <most common text in the cluster>}`. The search-id prefix (a hash of the pool's ids) keeps clusters of different searches apart when the browser merges multi-category pools.
+
+*select (every batch):*
+
+```
+steered = round(w · n) slots      (w = TITLE_CLUSTER_STEERING_WEIGHT, default 0.6)
+          only once something is kept: shared over the clusters of history.accepted,
+          in proportion to how many items were kept from each (largest remainder)
+explore = the remaining slots: one item per cluster, least-shown clusters first,
+          cycling until the batch is full
+within a cluster: random among its unseen items
+order:  steered items first, then exploration items
+```
+
+So the first batch (nothing kept) shows one item from each cluster; after the user keeps an item, the next batch holds ~60 % from that item's cluster and ~40 % exploration. `w = 0` never steers; `w = 1` fills the batch from kept clusters, with exploration only when those run out. Paging through without keeping anything shows every pool item exactly once.
+
+*When a batch has no keeps.* Steering uses **every** item kept so far in this search (`history.accepted` is cumulative), not just the last batch: if something was kept earlier, the next batch is still steered towards it; if nothing was ever kept, the batch is pure exploration. Not keeping something is **not** a negative signal — rejected items' clusters are not avoided. Exploration simply prefers the least-shown clusters, and with `n_clusters = n` every exploration batch covers all clusters once. A kept cluster that runs out of unseen items stops receiving steered slots, and exploration fills them.
+
+*Choosing the text (`TITLE_CLUSTER_TEXT`).* One spec covers a single field, a concatenation, or a sentence-like template; field names are checked against `Artifact` at startup:
+
+| Spec | Text for an object |
+|------|--------------------|
+| `title` | `HOUTEN VROUWENFIGUUR VERBONDEN MET HET YASSI-GENOOTSCHAP` |
+| `title,type,material,place` | `HOUTEN VROUWENFIGUUR … · beelden · glas (materiaal), hout, tand (dierlijk), katoen · Liberia` |
+| `{title}[ — {type}][, made of {material}][, from {place}]` | `HOUTEN VROUWENFIGUUR … — beelden, made of glas (materiaal), hout, …, from Liberia` |
+
+In a template, `{field}` inserts any Artifact field (list values joined with `, `), and `[ … ]` marks an optional part that is dropped when a field inside it is empty — an untitled object becomes `made of kokosnoot, from Liberia` rather than starting with a dangling separator. In a field list, missing fields are skipped the same way.
+
+*Choosing the fields.* Titles are often missing or generic in this collection (51 of 95 *masker* objects have none), which puts half the pool into one "(untitled)" cluster. Clustering on `TITLE_CLUSTER_TEXT=title,type,material,place` gives far more balanced and readable groups:
+
+| Search | Fields | Cluster sizes |
+|--------|--------|---------------|
+| masker | `title` | 51, 24, 12, 3, 1, 1, 1, 1, 1 |
+| masker | `title,type,material,place` | 23, 17, 16, 11, 11, 6, 5, 4, 2 |
+| Liberia | `title` | 26, 21, 12, 6, 5, 4, 3, 1, 1 |
+| Liberia | `title,type,material,place` | 18, 15, 14, 8, 7, 5, 5, 5, 2 (e.g. "gras · Liberia", "hout · Liberia", "hoeden · plantenvezel · Liberia") |
 
 ---
 
@@ -316,6 +373,8 @@ KNOWLEDGE_BASE=sparql_endpoint
 SELECTION=random
 EXPORTER=json
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
+TITLE_CLUSTER_TEXT=title           # used by SELECTION=title_cluster
+TITLE_CLUSTER_STEERING_WEIGHT=0.6
 ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json
 
 # Module settings (only the relevant ones are used)
@@ -341,7 +400,8 @@ REGISTRY = {
         "rdf_file":        "modules.knowledge_base.rdf_file.RDFFile",
     },
     "selection": {
-        "random": "modules.selection.random_strategy.RandomStrategy",
+        "random":        "modules.selection.random_strategy.RandomStrategy",
+        "title_cluster": "modules.selection.title_cluster.TitleClusterStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -501,6 +561,7 @@ museum_curation/
 │   ├── artifact.py                      # Artifact dataclass — the fixed object schema
 │   ├── artifact_fetcher.py              # artifact URIs → Artifact objects (fetch query)
 │   ├── image_cache.py                   # /thumb: cached thumbnails + placeholder detection
+│   ├── embedding.py                     # shared sentence-transformer + TextEmbedder cache
 │   ├── run_logger.py                    # RunLogger — append-only JSON Lines event log
 │   ├── query_generation/
 │   │   ├── _stub.py                     # copy-paste template for new impls
@@ -515,6 +576,10 @@ museum_curation/
 │   │   └── rdf_file.py                  # local TTL/RDF file via rdflib
 │   ├── selection/
 │   │   ├── _stub.py
+│   │   ├── common.py                    # unseen(), largest_remainder()
+│   │   ├── item_text.py                 # ItemText: field / field list / template → text
+│   │   ├── clustering.py                # Clusterer ABC + KMeansClusterer
+│   │   ├── title_cluster.py          # cluster → one per cluster → steer to kept clusters
 │   │   └── random_strategy.py           # random.sample(unseen, n)
 │   ├── retrieval_evaluator/
 │   │   ├── _stub.py
@@ -604,7 +669,7 @@ Switching to a different graph = create a new `collections/<graph>/` folder, poi
 
 - LLM- or embedding-based ConceptMatcher (interface ready, impl deferred)
 - Relaxed retrieval and MMR-style diversity-aware selection (see the diversity design doc)
-- Scored / active-learning SelectionStrategy (interface + score field ready, impl deferred)
+- Further feedback-driven SelectionStrategies (e.g. nearest neighbours of kept items, rejected-cluster down-weighting)
 - Object validation
 - User accounts or persistent sessions
 - Docker / container deployment

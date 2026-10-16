@@ -33,7 +33,8 @@ REGISTRY = {
         "rdf_file":        "modules.knowledge_base.rdf_file.RDFFile",
     },
     "selection": {
-        "random": "modules.selection.random_strategy.RandomStrategy",
+        "random":        "modules.selection.random_strategy.RandomStrategy",
+        "title_cluster": "modules.selection.title_cluster.TitleClusterStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -88,7 +89,19 @@ def _build_knowledge_base(key: str):
 
 
 def _build_selection(key: str):
-    return _load_class("selection", key)()
+    cls = _load_class("selection", key)
+    if key == "title_cluster":
+        from modules.embedding import DEFAULT_MODEL, TextEmbedder
+        from modules.selection.clustering import KMeansClusterer
+        from modules.selection.item_text import ItemText
+        return cls(
+            embedder=TextEmbedder(os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL)),
+            clusterer=KMeansClusterer(),
+            text=ItemText(os.getenv("TITLE_CLUSTER_TEXT", "title")),
+            n_clusters=int(os.getenv("TITLE_CLUSTER_N_CLUSTERS", str(N_PER_BATCH))),
+            steering_weight=float(os.getenv("TITLE_CLUSTER_STEERING_WEIGHT", "0.6")),
+        )
+    return cls()
 
 
 def _build_exporter(key: str):
