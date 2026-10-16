@@ -1,5 +1,5 @@
 from modules.base import SelectionHistory, SelectionStrategy
-from modules.selection.common import unseen
+from modules.selection.utils import unseen
 
 
 class MySelectionStrategy(SelectionStrategy):
@@ -10,8 +10,7 @@ class MySelectionStrategy(SelectionStrategy):
       3. Set SELECTION=<your-key> in .env
 
     Reusable pieces:
-      modules/selection/common.py      unseen(), largest_remainder()
-      modules/selection/item_text.py   ItemText: item → text from a field list or template
+      modules/selection/utils.py       unseen(), largest_remainder(), metadata_linearization()
       modules/selection/clustering.py  Clusterer / KMeansClusterer
       modules/embedding.py             TextEmbedder (shared embedding model)
     See title_cluster.py for a complete example.

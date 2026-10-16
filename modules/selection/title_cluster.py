@@ -3,8 +3,8 @@ TitleClusterStrategy — cluster the pool, show one of each, then steer
 towards the clusters the user keeps from, while always keeping some exploration.
 
 prepare(pool)   once per search
-    1. Build a text per item with an ItemText spec (default: the title) —
-       a field, a comma-separated list of fields, or a template; see item_text.py.
+    1. Linearize each item's metadata into one text (metadata_linearization),
+       from the configured Artifact fields (default: the title).
     2. Embed the texts (shared TextEmbedder) and cluster them (Clusterer),
        aiming for `n_clusters` clusters (default: the batch size).
     3. Store on each item:  item["selection"] = {"cluster": "<search-id>:<k>",
@@ -28,12 +28,12 @@ still fills in when those clusters run out).
 import hashlib
 import random
 from collections import Counter, defaultdict
+from typing import Callable
 
 from modules.base import SelectionHistory, SelectionStrategy
 from modules.embedding import TextEmbedder
 from modules.selection.clustering import Clusterer
-from modules.selection.common import largest_remainder, unseen
-from modules.selection.item_text import ItemText
+from modules.selection.utils import largest_remainder, metadata_linearization, unseen
 
 _UNTITLED = "(untitled)"
 
@@ -43,7 +43,7 @@ class TitleClusterStrategy(SelectionStrategy):
         self,
         embedder: TextEmbedder,
         clusterer: Clusterer,
-        text: ItemText | None = None,
+        linearize: Callable[[dict], str] | None = None,
         n_clusters: int = 9,
         steering_weight: float = 0.6,
         seed: int | None = None,
@@ -52,7 +52,7 @@ class TitleClusterStrategy(SelectionStrategy):
             raise ValueError(f"steering_weight must be in [0, 1], got {steering_weight}")
         self._embedder  = embedder
         self._clusterer = clusterer
-        self._text      = text or ItemText("title")
+        self._linearize = linearize or metadata_linearization("title")
         self._k         = n_clusters
         self._w         = steering_weight
         self._rng       = random.Random(seed)
@@ -62,7 +62,7 @@ class TitleClusterStrategy(SelectionStrategy):
     def prepare(self, pool: list) -> None:
         if not pool:
             return
-        texts  = [self._text(item) or _UNTITLED for item in pool]
+        texts  = [self._linearize(item) or _UNTITLED for item in pool]
         labels = self._clusterer.fit(self._embedder.embed(texts), self._k)
 
         search_id = hashlib.sha1("".join(sorted(i["id"] for i in pool)).encode()).hexdigest()[:6]

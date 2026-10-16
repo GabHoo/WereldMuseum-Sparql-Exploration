@@ -199,9 +199,9 @@ class SelectionStrategy(ABC):
 
 | Piece | File | What it does |
 |-------|------|--------------|
-| `unseen(pool, history)` | `modules/selection/common.py` | items not shown yet |
-| `ItemText(spec)` | `modules/selection/item_text.py` | item → text from a field, a field list, or a template (below) |
-| `largest_remainder(weights, total)` | `modules/selection/common.py` | splits a number of slots over keys proportionally, in whole numbers |
+| `unseen(pool, history)` | `modules/selection/utils.py` | items not shown yet |
+| `metadata_linearization(fields)` | `modules/selection/utils.py` | returns item → one text line from the given Artifact fields (validated at startup) |
+| `largest_remainder(weights, total)` | `modules/selection/utils.py` | splits a number of slots over keys proportionally, in whole numbers |
 | `Clusterer` / `KMeansClusterer` | `modules/selection/clustering.py` | vectors → cluster labels (swap in another algorithm by implementing `fit`) |
 | `TextEmbedder` | `modules/embedding.py` | cached, normalised text embeddings; the model is loaded once per process and shared with the evaluator |
 
@@ -214,7 +214,7 @@ class SelectionStrategy(ABC):
 
 #### TitleClusterStrategy (`title_cluster`)
 
-*prepare (once per search):* each item's text is built by `ItemText(TITLE_CLUSTER_TEXT)` (default `title`), embedded with the shared `TextEmbedder`, and clustered with k-means into `TITLE_CLUSTER_N_CLUSTERS` clusters (default = batch size, 9). Each item gets `item["selection"] = {"cluster": "<search-id>:<k>", "cluster_label": <most common text in the cluster>}`. The search-id prefix (a hash of the pool's ids) keeps clusters of different searches apart when the browser merges multi-category pools.
+*prepare (once per search):* each item's metadata is linearized into one text by `metadata_linearization(TITLE_CLUSTER_FIELDS)` (default `title`), embedded with the shared `TextEmbedder`, and clustered with k-means into `TITLE_CLUSTER_N_CLUSTERS` clusters (default = batch size, 9). Each item gets `item["selection"] = {"cluster": "<search-id>:<k>", "cluster_label": <most common text in the cluster>}`. The search-id prefix (a hash of the pool's ids) keeps clusters of different searches apart when the browser merges multi-category pools.
 
 *select (every batch):*
 
@@ -232,17 +232,15 @@ So the first batch (nothing kept) shows one item from each cluster; after the us
 
 *When a batch has no keeps.* Steering uses **every** item kept so far in this search (`history.accepted` is cumulative), not just the last batch: if something was kept earlier, the next batch is still steered towards it; if nothing was ever kept, the batch is pure exploration. Not keeping something is **not** a negative signal — rejected items' clusters are not avoided. Exploration simply prefers the least-shown clusters, and with `n_clusters = n` every exploration batch covers all clusters once. A kept cluster that runs out of unseen items stops receiving steered slots, and exploration fills them.
 
-*Choosing the text (`TITLE_CLUSTER_TEXT`).* One spec covers a single field, a concatenation, or a sentence-like template; field names are checked against `Artifact` at startup:
+*Choosing the text (`TITLE_CLUSTER_FIELDS`).* A comma-separated list of Artifact fields; their values are joined with ` · ` (list fields contribute all values joined with `, `, empty fields are skipped). Field names are checked against `Artifact` at startup.
 
-| Spec | Text for an object |
+| `TITLE_CLUSTER_FIELDS` | Text for an object |
 |------|--------------------|
 | `title` | `HOUTEN VROUWENFIGUUR VERBONDEN MET HET YASSI-GENOOTSCHAP` |
 | `title,type,material,place` | `HOUTEN VROUWENFIGUUR … · beelden · glas (materiaal), hout, tand (dierlijk), katoen · Liberia` |
-| `{title}[ — {type}][, made of {material}][, from {place}]` | `HOUTEN VROUWENFIGUUR … — beelden, made of glas (materiaal), hout, …, from Liberia` |
+| `title,type,material,place` (untitled object) | `kokosnoot · Liberia` |
 
-In a template, `{field}` inserts any Artifact field (list values joined with `, `), and `[ … ]` marks an optional part that is dropped when a field inside it is empty — an untitled object becomes `made of kokosnoot, from Liberia` rather than starting with a dangling separator. In a field list, missing fields are skipped the same way.
-
-*Choosing the fields.* Titles are often missing or generic in this collection (51 of 95 *masker* objects have none), which puts half the pool into one "(untitled)" cluster. Clustering on `TITLE_CLUSTER_TEXT=title,type,material,place` gives far more balanced and readable groups:
+*Choosing the fields.* Titles are often missing or generic in this collection (51 of 95 *masker* objects have none), which puts half the pool into one "(untitled)" cluster. Clustering on `TITLE_CLUSTER_FIELDS=title,type,material,place` gives far more balanced and readable groups:
 
 | Search | Fields | Cluster sizes |
 |--------|--------|---------------|
@@ -373,7 +371,7 @@ KNOWLEDGE_BASE=sparql_endpoint
 SELECTION=random
 EXPORTER=json
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
-TITLE_CLUSTER_TEXT=title           # used by SELECTION=title_cluster
+TITLE_CLUSTER_FIELDS=title         # used by SELECTION=title_cluster
 TITLE_CLUSTER_STEERING_WEIGHT=0.6
 ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json
 
@@ -576,8 +574,7 @@ museum_curation/
 │   │   └── rdf_file.py                  # local TTL/RDF file via rdflib
 │   ├── selection/
 │   │   ├── _stub.py
-│   │   ├── common.py                    # unseen(), largest_remainder()
-│   │   ├── item_text.py                 # ItemText: field / field list / template → text
+│   │   ├── utils.py                     # unseen(), largest_remainder(), metadata_linearization()
 │   │   ├── clustering.py                # Clusterer ABC + KMeansClusterer
 │   │   ├── title_cluster.py          # cluster → one per cluster → steer to kept clusters
 │   │   └── random_strategy.py           # random.sample(unseen, n)
