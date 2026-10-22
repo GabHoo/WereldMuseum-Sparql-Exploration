@@ -6,7 +6,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request, sen
 
 import config
 from modules.artifact import Artifact
-from modules.base import SelectionHistory
+from modules.base import ChatModelError, SelectionHistory
 from modules.selection.textual_interaction import generate_chat_response
 
 app = Flask(__name__)
@@ -200,15 +200,19 @@ def chat():
             # We gaan door, maar zonder de bestandscontext
             context_prefix = "[Systeem info: Automatische export naar exhibition.json mislukt]\n"
 
+    model = MODULES.get("chat_model")
+    if model is None:
+        return jsonify({"error": "No chat model configured (set CHAT_MODEL in .env)."}), 503
+
     try:
         # Combineer de bestandsinhoud met de vraag van de gebruiker
         full_message = f"{context_prefix}{user_message}"
-
-        # Roep de functie aan uit textual_interaction.py
-        reply = generate_chat_response(full_message)
+        reply = generate_chat_response(model, full_message)
         return jsonify({"reply": reply})
+    except ChatModelError as e:
+        return jsonify({"error": str(e)}), 503
     except Exception as e:
-        return jsonify({"error": f"Llama Error: {str(e)}"}), 500
+        return jsonify({"error": f"Chat model error: {e}"}), 500
 
 
 if __name__ == "__main__":

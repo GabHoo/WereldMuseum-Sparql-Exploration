@@ -46,6 +46,7 @@ User types NL query (or clicks a category)
 | 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
 | 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
 | 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
+| 8 | ChatModel | `CHAT_MODEL` | `chat(messages) -> str` (AI curation assistant, optional) |
 
 All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`).
 
@@ -304,6 +305,26 @@ Each record automatically gets a `timestamp` field (UTC ISO-8601).
 
 ---
 
+### 8. ChatModel (AI curation assistant)
+
+The chat box under the selection sends the curator's message plus the kept items to `POST /api/chat`. The route adds the exported selection JSON to the message and `modules/selection/textual_interaction.py` asks the configured ChatModel for a reply (system prompt: summarise commonalities and differences of the selection, concisely).
+
+```python
+class ChatModel(ABC):
+    def chat(self, messages: list[dict]) -> str: ...   # [{"role", "content"}, ...] → reply
+```
+
+Implementations raise `ChatModelError` with a readable message (missing login or key, model unavailable); `/api/chat` returns it as the error shown in the chat instead of crashing.
+
+| Name | Key | How it works |
+|------|-----|--------------|
+| `LocalHFChatModel` | `local_hf` | Hugging Face `transformers` pipeline on this machine (`CHAT_LOCAL_MODEL`, default `meta-llama/Llama-3.2-1B-Instruct`; `CHAT_DEVICE` mps → cuda → cpu). Loaded on the first chat, not at startup. At startup it looks for a token (`HF_TOKEN`, then a saved Hugging Face login); with none and a terminal attached it starts the Hugging Face login prompt. Gated models without access give a message with the login and access-request steps. |
+| `HostedChatModel` | `hosted` | Any OpenAI-compatible `POST <CHAT_API_BASE_URL>/chat/completions` (OpenAI, Groq, Together, Mistral, OpenRouter, …) with `CHAT_API_KEY` and `CHAT_API_MODEL`. Standard library only. |
+
+Leave `CHAT_MODEL` blank to disable the assistant (`/api/chat` answers 503). New models: copy `modules/chat_model/_stub.py`.
+
+---
+
 ## Default Configuration & Implementation Selection
 
 Configuration lives in two files:
@@ -527,6 +548,10 @@ museum_curation/
 │   ├── exporter/
 │   │   ├── _stub.py
 │   │   └── json_exporter.py
+│   ├── chat_model/
+│   │   ├── _stub.py
+│   │   ├── local_hf.py                  # local transformers pipeline + HF login
+│   │   └── hosted.py                    # OpenAI-compatible HTTP API
 │   └── exhibition_builder/              # downstream consumer of the export (skeleton)
 │       ├── _stub.py
 │       └── digital_wall.py

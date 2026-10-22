@@ -135,3 +135,18 @@ class ExhibitionBuilder(ABC):
         Produce a digital exhibition from a curated selection.
         export_data: the dict produced by Exporter — { meta: {...}, items: [...] }
         """
+
+
+class ChatModelError(Exception):
+    """A chat model could not answer (missing login/key, model unavailable, ...).
+    The message is meant to be shown to the user."""
+
+
+class ChatModel(ABC):
+    @abstractmethod
+    def chat(self, messages: list[dict]) -> str:
+        """
+        messages: [{"role": "system" | "user" | "assistant", "content": str}, ...]
+        Returns the assistant's reply. Raise ChatModelError with a readable
+        message when the model cannot answer.
+        """

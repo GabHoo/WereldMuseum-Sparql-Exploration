@@ -41,6 +41,10 @@ REGISTRY = {
     "retrieval_evaluator": {
         "diversity": "modules.retrieval_evaluator.diversity_evaluator.DiversityEvaluator",
     },
+    "chat_model": {
+        "local_hf": "modules.chat_model.local_hf.LocalHFChatModel",
+        "hosted":   "modules.chat_model.hosted.HostedChatModel",
+    },
 }
 
 
@@ -133,12 +137,29 @@ def _build_retrieval_evaluator(key: str, knowledge_base):
     raise ValueError(f"Unknown retrieval_evaluator key: {key!r}")
 
 
+def _build_chat_model(key: str):
+    cls = _load_class("chat_model", key)
+    if key == "local_hf":
+        return cls(
+            model_id=os.getenv("CHAT_LOCAL_MODEL", "meta-llama/Llama-3.2-1B-Instruct"),
+            device=os.getenv("CHAT_DEVICE", "").strip() or None,   # default: mps → cuda → cpu
+        )
+    if key == "hosted":
+        return cls(
+            base_url=os.getenv("CHAT_API_BASE_URL", "https://api.openai.com/v1"),
+            api_key=os.getenv("CHAT_API_KEY", ""),
+            model=os.getenv("CHAT_API_MODEL", "gpt-4o-mini"),
+        )
+    return cls()
+
+
 def build_modules() -> dict:
     qg_key  = os.getenv("QUERY_GENERATION", "category_select")
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
     sel_key = os.getenv("SELECTION", "random")
     exp_key = os.getenv("EXPORTER", "json")
     re_key  = os.getenv("RETRIEVAL_EVALUATOR", "").strip()
+    chat_key = os.getenv("CHAT_MODEL", "local_hf").strip()
 
     knowledge_base = _build_knowledge_base(kb_key)
     modules = {
@@ -153,4 +174,6 @@ def build_modules() -> dict:
     }
     if re_key:
         modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)
+    if chat_key:
+        modules["chat_model"] = _build_chat_model(chat_key)
     return modules
