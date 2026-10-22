@@ -29,7 +29,7 @@ All module selection is done via `.env`. Copy `.env.example` to `.env` and set:
 QUERY_GENERATION=category_select  # category_select | concept_query
 CONCEPT_MATCHER=thesaurus         # thesaurus (used by concept_query)
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
-SELECTION=random                  # random
+SELECTION=random                  # random | title_cluster
 EXPORTER=json                     # json
 RETRIEVAL_EVALUATOR=              # diversity | blank = off
 ```
@@ -93,7 +93,8 @@ modules/
   query_generation/ Query generation implementations
   concept_matching/ Text → concept URI matchers used by concept_query
   knowledge_base/   SPARQL execution backends
-  selection/        Item selection strategies
+  selection/        Item selection strategies (random, title_cluster) + shared helpers
+  embedding.py      Shared text-embedding model
   retrieval_evaluator/ Optional pool diversity / surprise metrics
   exporter/         Export formats
   exhibition_builder/ Downstream exhibition layouts (skeleton)

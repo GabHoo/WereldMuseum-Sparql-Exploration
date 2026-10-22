@@ -1,28 +1,40 @@
 from modules.base import SelectionHistory, SelectionStrategy
+from modules.selection.utils import unseen
 
 
 class MySelectionStrategy(SelectionStrategy):
     """
     Stub — copy this file, rename the class, implement select(), then:
       1. Add an entry to REGISTRY["selection"] in config.py
-      2. Set SELECTION=<your-key> in .env
+      2. If it needs constructor args, add a branch in _build_selection()
+      3. Set SELECTION=<your-key> in .env
+
+    Reusable pieces:
+      modules/selection/utils.py       unseen(), largest_remainder(), metadata_linearization()
+      modules/selection/clustering.py  Clusterer / KMeansClusterer
+      modules/embedding.py             TextEmbedder (shared embedding model)
+    See title_cluster.py for a complete example.
     """
+
+    def prepare(self, pool: list) -> None:
+        """
+        Optional. Called once per /search, before the first select().
+        Do per-search work here (embedding, clustering, scoring) and store
+        small JSON-serialisable results in item["selection"] — the pool goes
+        to the browser and comes back with every /next call. Never store vectors.
+        """
 
     def select(self, pool: list, n: int, history: SelectionHistory) -> list:
         """
-        pool    : all items from the SPARQL query, each a dict with:
-                    id         (str)
-                    title      (str)
-                    score      (float, default 1.0 — you may mutate this)
-                    properties (dict of raw SPARQL fields)
+        pool    : pool items {id, title, score, properties, selection?}
+                  properties is the Artifact dict (modules/artifact.py)
         n       : number of items to return
-        history : SelectionHistory with:
-                    accepted   list of item IDs the user said yes to
-                    rejected   list of item IDs the user said no to
-                    seen       list of all item IDs ever shown (never return these)
+        history : SelectionHistory with
+                    accepted   ids the user kept so far in this search
+                    rejected   ids shown but not kept
+                    seen       every id shown so far (never return these)
 
-        Return n items from pool whose id is NOT in history.seen.
-        You may mutate item["score"] — scores are sent back to the browser
-        and included in the next call, so rankings accumulate across rounds.
+        Return up to n items from unseen(pool, history).
         """
+        candidates = unseen(pool, history)
         raise NotImplementedError
