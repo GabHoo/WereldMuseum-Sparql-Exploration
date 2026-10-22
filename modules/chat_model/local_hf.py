@@ -72,13 +72,26 @@ class LocalHFChatModel(ChatModel):
             except Exception as e:
                 text = str(e).lower()
                 if any(w in text for w in ("gated", "401", "403", "unauthorized", "authenticat")):
-                    raise ChatModelError(
-                        f"No access to {self._model_id}. Log in with a Hugging Face token "
-                        f"(set HF_TOKEN in .env, or restart the app in a terminal to get the login "
-                        f"prompt) and request access at https://huggingface.co/{self._model_id}."
-                    ) from e
+                    raise ChatModelError(self._access_message()) from e
                 raise ChatModelError(f"Could not load {self._model_id}: {e}") from e
         return self._pipe
+
+    def _access_message(self) -> str:
+        page = f"https://huggingface.co/{self._model_id}"
+        user = None
+        if self._token:
+            try:
+                from huggingface_hub import whoami
+                user = whoami(token=self._token)["name"]
+            except Exception:
+                pass
+        if user:
+            return (f"Logged in to Hugging Face as {user}, but this account has no access to "
+                    f"{self._model_id} yet. Request access on {page} (the owner must approve it), "
+                    f"or set CHAT_LOCAL_MODEL to an open model such as Qwen/Qwen2.5-1.5B-Instruct.")
+        return (f"No Hugging Face login with access to {self._model_id}. Set HF_TOKEN in .env, "
+                f"or restart the app in a terminal to get the login prompt, then request access "
+                f"on {page}.")
 
     def chat(self, messages: list[dict]) -> str:
         outputs = self._pipeline()(messages, max_new_tokens=self._max_new_tokens)

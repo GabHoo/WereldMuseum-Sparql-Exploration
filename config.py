@@ -44,7 +44,7 @@ REGISTRY = {
     },
     "chat_model": {
         "local_hf": "modules.chat_model.local_hf.LocalHFChatModel",
-        "hosted":   "modules.chat_model.hosted.HostedChatModel",
+        "nebula":   "modules.chat_model.nebula.NebulaChatModel",
     },
 }
 
@@ -158,11 +158,12 @@ def _build_chat_model(key: str):
             model_id=os.getenv("CHAT_LOCAL_MODEL", "meta-llama/Llama-3.2-1B-Instruct"),
             device=os.getenv("CHAT_DEVICE", "").strip() or None,   # default: mps → cuda → cpu
         )
-    if key == "hosted":
+    if key == "nebula":
+        from modules.chat_model.nebula import NEBULA_BASE_URL
         return cls(
-            base_url=os.getenv("CHAT_API_BASE_URL", "https://api.openai.com/v1"),
-            api_key=os.getenv("CHAT_API_KEY", ""),
-            model=os.getenv("CHAT_API_MODEL", "gpt-4o-mini"),
+            api_key=os.getenv("NEBULA_API_KEY", ""),
+            model=os.getenv("NEBULA_MODEL", "deepseek-r1:1.5b"),
+            base_url=os.getenv("NEBULA_BASE_URL", NEBULA_BASE_URL),
         )
     return cls()
 

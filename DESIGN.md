@@ -383,8 +383,8 @@ Implementations raise `ChatModelError` with a readable message (missing login or
 
 | Name | Key | How it works |
 |------|-----|--------------|
-| `LocalHFChatModel` | `local_hf` | Hugging Face `transformers` pipeline on this machine (`CHAT_LOCAL_MODEL`, default `meta-llama/Llama-3.2-1B-Instruct`; `CHAT_DEVICE` mps → cuda → cpu). Loaded on the first chat, not at startup. At startup it looks for a token (`HF_TOKEN`, then a saved Hugging Face login); with none and a terminal attached it starts the Hugging Face login prompt. Gated models without access give a message with the login and access-request steps. |
-| `HostedChatModel` | `hosted` | Any OpenAI-compatible `POST <CHAT_API_BASE_URL>/chat/completions` (OpenAI, Groq, Together, Mistral, OpenRouter, …) with `CHAT_API_KEY` and `CHAT_API_MODEL`. Standard library only. |
+| `LocalHFChatModel` | `local_hf` | Hugging Face `transformers` pipeline on this machine (`CHAT_LOCAL_MODEL`, default `meta-llama/Llama-3.2-1B-Instruct`; `CHAT_DEVICE` mps → cuda → cpu). Loaded on the first chat, not at startup. At startup it looks for a token (`HF_TOKEN`, then a saved Hugging Face login); with none and a terminal attached it starts the Hugging Face login prompt. Gated models give a message that says whether you are logged in and lack access (request it on the model page, or set `CHAT_LOCAL_MODEL` to an open model such as `Qwen/Qwen2.5-1.5B-Instruct`) or are not logged in. |
+| `NebulaChatModel` | `nebula` | The VU Nebula service (`https://nebula.cs.vu.nl/api/`, OpenAI-compatible) via the official `openai` client, as in `networkinstitutevu/nebula-api-examples`. `NEBULA_API_KEY`, `NEBULA_MODEL` (default `deepseek-r1:1.5b`). `<think>…</think>` reasoning is stripped from replies. `python -m modules.chat_model.nebula` lists the models your key can use. |
 
 Leave `CHAT_MODEL` blank to disable the assistant (`/api/chat` answers 503). New models: copy `modules/chat_model/_stub.py`.
 
@@ -624,7 +624,7 @@ museum_curation/
 │   ├── chat_model/
 │   │   ├── _stub.py
 │   │   ├── local_hf.py                  # local transformers pipeline + HF login
-│   │   └── hosted.py                    # OpenAI-compatible HTTP API
+│   │   └── nebula.py                    # VU Nebula (OpenAI-compatible) via openai client
 │   └── exhibition_builder/              # downstream consumer of the export (skeleton)
 │       ├── _stub.py
 │       └── digital_wall.py
