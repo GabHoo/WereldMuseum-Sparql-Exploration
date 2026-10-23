@@ -7,7 +7,8 @@ Pipeline (/search):
       │  (finds ?artifact URIs)            (URIs → Artifact objects, modules/artifact.py)
       │  (concept_query delegates text → concepts to a ConceptMatcher)
       └─ query features ──▶ RetrievalEvaluator (optional)
-Then /next re-runs SelectionStrategy and /export runs Exporter.
+Then /next re-runs SelectionStrategy, /export runs Exporter and /exhibition
+runs ExhibitionBuilder.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field

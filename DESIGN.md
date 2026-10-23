@@ -29,7 +29,8 @@ User types NL query (or clicks a category)
                      │                               features, pool, history, exports
                      ├─ "Next batch" ──▶ SelectionStrategy picks next N (seen items never return)
                      │
-                     └─ enough Yes ──▶ [Exporter] ──▶ JSON download
+                     └─ enough Yes ─┬─▶ [Exporter] ──▶ JSON download
+                                    └─▶ [ExhibitionBuilder] ──▶ exhibition page (new tab)
 ```
 
 ---
@@ -46,6 +47,7 @@ User types NL query (or clicks a category)
 | 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
 | 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
 | 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
+| 8 | ExhibitionBuilder | `EXHIBITION_BUILDER` | `build(export_data) -> str` (HTML page), optional `render(...)` |
 
 All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`).
 
