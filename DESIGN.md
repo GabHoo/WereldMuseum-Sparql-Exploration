@@ -46,7 +46,8 @@ User types NL query (or clicks a category)
 | 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
 | 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
 | 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
-| 8 | ChatModel | `CHAT_MODEL` | `chat(messages) -> str` (AI curation assistant, optional) |
+| 8 | ChatModel | `CHAT_MODEL` | `chat(messages) -> str` (used by the CurationAssistant, optional) |
+| — | CurationAssistant | `CHAT_CONTEXT_FIELDS` | `reply(message, items, exhibition_theme) -> str` (infrastructure around the ChatModel) |
 
 All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`).
 
@@ -336,7 +337,7 @@ Serialises the final selection into a downloadable file.
 | | |
 |--|--|
 | **Input** | `items: list[dict]` — the Yes-selected items (pool format, score stripped) |
-| | `meta: dict` — `{ query, sparql, timestamp }` |
+| | `meta: dict` — `{ query, sparql, exhibition_theme, timestamp }` |
 | **Output** | `bytes` — file content ready for HTTP download |
 
 ```python
@@ -352,18 +353,21 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 
 | | |
 |--|--|
-| **Events logged** | `search` — query, query_features, generated SPARQL, full pool, first displayed batch |
+| **Events logged** | `search` — query, exhibition_theme, query_features, generated SPARQL, full pool, first displayed batch |
 | | `next` — current history (accepted / rejected / seen), next displayed batch |
 | | `export` — exported items and metadata |
+| | `chat` — curator message, exhibition_theme, selected item ids, assistant reply |
 | **Format** | JSON Lines (`.jsonl` / `.log`): one `json.loads()`-able object per line, append-only |
 | **Config** | `LOG_FILE` — path to log file (default `runs.log`, gitignored via `*.log`) |
 | | `LOG_CONSOLE` — `"true"` to also print each record to stdout |
 
 ```python
 class RunLogger:
-    def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None) -> None: ...
+    def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None,
+                   exhibition_theme: str = "") -> None: ...
     def log_next(self, history: dict, displayed: list) -> None: ...
     def log_export(self, items: list, meta: dict) -> None: ...
+    def log_chat(self, message: str, reply: str, items: list, exhibition_theme: str = "") -> None: ...
 ```
 
 Each record automatically gets a `timestamp` field (UTC ISO-8601).
@@ -372,7 +376,14 @@ Each record automatically gets a `timestamp` field (UTC ISO-8601).
 
 ### 8. ChatModel (AI curation assistant)
 
-The chat box under the selection sends the curator's message plus the kept items to `POST /api/chat`. The route adds the exported selection JSON to the message and `modules/selection/textual_interaction.py` asks the configured ChatModel for a reply (system prompt: summarise commonalities and differences of the selection, concisely).
+The chat box under the selection sends the curator's message, the kept items and the exhibition theme to `POST /api/chat`. The route hands them to the `CurationAssistant` (`modules/curation_assistant.py`), which config.py builds around the configured ChatModel. The assistant writes each item as one line of text from the Artifact fields in `CHAT_CONTEXT_FIELDS` (default `title,type,material,place,date,maker,intended_use`, via `metadata_linearization`), adds the exhibition theme, and sends both with the message. It is stateless: earlier messages are not resent.
+
+The system prompt (`SYSTEM_PROMPT` in `curation_assistant.py`) asks for summaries of the selection *as a whole*: the two to four strongest recurring themes and the connections between the objects (shared functions, materials, places, periods, makers, cultural practices), each as a short heading with one or two sentences. Single objects appear only as brief examples of a theme. When an exhibition theme is given, the summary relates the connections to it and names objects that do not fit.
+
+```python
+class CurationAssistant:
+    def reply(self, message: str, items: list, exhibition_theme: str = "") -> str: ...   # raises ChatModelError
+```
 
 ```python
 class ChatModel(ABC):
@@ -386,7 +397,7 @@ Implementations raise `ChatModelError` with a readable message (missing login or
 | `LocalHFChatModel` | `local_hf` | Hugging Face `transformers` pipeline on this machine (`CHAT_LOCAL_MODEL`, default `meta-llama/Llama-3.2-1B-Instruct`; `CHAT_DEVICE` mps → cuda → cpu). Loaded on the first chat, not at startup. At startup it looks for a token (`HF_TOKEN`, then a saved Hugging Face login); with none and a terminal attached it starts the Hugging Face login prompt. Gated models give a message that says whether you are logged in and lack access (request it on the model page, or set `CHAT_LOCAL_MODEL` to an open model such as `Qwen/Qwen2.5-1.5B-Instruct`) or are not logged in. |
 | `NebulaChatModel` | `nebula` | The VU Nebula service (`https://nebula.cs.vu.nl/api/`, OpenAI-compatible) via the official `openai` client, as in `networkinstitutevu/nebula-api-examples`. `NEBULA_API_KEY`, `NEBULA_MODEL` (default `deepseek-r1:1.5b`). `<think>…</think>` reasoning is stripped from replies. `python -m modules.chat_model.nebula` lists the models your key can use. |
 
-Leave `CHAT_MODEL` blank to disable the assistant (`/api/chat` answers 503). New models: copy `modules/chat_model/_stub.py`.
+Leave `CHAT_MODEL` blank to disable the assistant: the chat box is not shown and `/api/chat` answers 503. Each chat is logged as a `chat` event. New models: copy `modules/chat_model/_stub.py`.
 
 ---
 
@@ -512,6 +523,7 @@ Pool items wrap an artifact for the UI and the selection loop:
   "meta": {
     "query": "funerary objects from West Africa",
     "sparql": "SELECT ...",
+    "exhibition_theme": "masks and their role in funerary rites",
     "timestamp": "2026-07-02T12:00:00Z"
   },
   "items": [
@@ -575,9 +587,10 @@ Infrastructure behind `/thumb`. On the first request for an image URL it downloa
 | Method | Path | Request body | Response |
 |--------|------|-------------|----------|
 | `GET` | `/` | — | Serves `index.html` |
-| `POST` | `/search` | `{ query: str, n: int }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
+| `POST` | `/search` | `{ query: str, n: int, exhibition_theme: str }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
 | `POST` | `/next` | `{ pool: [...], n: int, history: {...} }` | `{ displayed: [...], pool: [...] }` |
 | `POST` | `/export` | `{ items: [...], meta: {...} }` | JSON file download |
+| `POST` | `/api/chat` | `{ message: str, items: [...], exhibition_theme: str }` | `{ reply: str }`; `503` with `{ error }` when no model is configured or it cannot answer |
 | `GET` | `/thumb?url=…` | — | Cached JPEG thumbnail; `404` if the image is a placeholder, `403` if the host is not allowed, `502` if it can't be fetched |
 
 ---
@@ -593,6 +606,7 @@ museum_curation/
 │   ├── image_cache.py                   # /thumb: cached thumbnails + placeholder detection
 │   ├── embedding.py                     # shared sentence-transformer + TextEmbedder cache
 │   ├── run_logger.py                    # RunLogger — append-only JSON Lines event log
+│   ├── curation_assistant.py            # CurationAssistant — chat prompt + selection context for a ChatModel
 │   ├── query_generation/
 │   │   ├── _stub.py                     # copy-paste template for new impls
 │   │   ├── category_select.py           # baseline: fixed category buttons

@@ -12,7 +12,7 @@ class MyExporter(Exporter):
         """
         items : list of selected pool items (score field is already stripped).
                 Each item: { id, title, properties: {...} }
-        meta  : { query, sparql, timestamp }
+        meta  : { query, sparql, exhibition_theme, timestamp }
 
         Return the file content as bytes. Flask sends this as a download.
         Set the correct MIME type and filename in app.py's /export route

@@ -50,6 +50,15 @@ class RunLogger:
             "items":       items,
         })
 
+    def log_chat(self, message: str, reply: str, items: list, exhibition_theme: str = "") -> None:
+        self._emit({
+            "event":            "chat",
+            "message":          message,
+            "exhibition_theme": exhibition_theme,
+            "item_ids":         [i["id"] for i in items],
+            "reply":            reply,
+        })
+
     # ── internal ──────────────────────────────────────────────────────────────
 
     def _emit(self, record: dict) -> None:

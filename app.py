@@ -1,5 +1,3 @@
-import json
-import os
 from datetime import datetime, timezone
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
@@ -7,7 +5,6 @@ from flask import Flask, Response, abort, jsonify, render_template, request, sen
 import config
 from modules.artifact import Artifact
 from modules.base import ChatModelError, SelectionHistory
-from modules.selection.textual_interaction import generate_chat_response
 
 app = Flask(__name__)
 MODULES = config.build_modules()
@@ -50,6 +47,7 @@ def index():
         query_generation_mode=MODULES["query_generation_key"],
         categories=t2s.get_categories(),
         n_per_batch=config.N_PER_BATCH,
+        chat_model_key=MODULES.get("chat_model_key"),
     )
 
 
@@ -164,59 +162,28 @@ def export():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    """Route die de tentoonstelling exporteert naar bestand en de data meegeeft aan Llama."""
+    """The curator's chat message about the current selection → assistant reply."""
     data = request.get_json(silent=True) or {}
-    user_message = data.get("message", "").strip()
+    message = data.get("message", "").strip()
     items = data.get("items", [])
-    meta = data.get("meta", {})
+    exhibition_theme = data.get("exhibition_theme", "").strip()
 
-    if not user_message:
-        return jsonify({"error": "Message is required"}), 400
+    if not message:
+        return jsonify({"error": "message is required"}), 400
 
-    context_prefix = ""
-
-    json_string_context = None
-
-    # Als er items in de huidige sessie zijn, trigger dan de JSON-export op de achtergrond
-    if items:
-        try:
-            # 1. Log de export (net als in de /export route)
-            MODULES["logger"].log_export(items, meta)
-
-            # 2. Genereer de JSON payload via de bestaande exporter
-            payload = MODULES["exporter"].export(items, meta)
-
-            # 3. Sla het bestand fysiek op als 'exhibition.json' in je werkmap
-            export_filename = "exhibition.json"
-            with open(export_filename, "wb") as f:
-                f.write(payload if isinstance(payload, bytes) else payload.encode('utf-8'))
-
-            # 4. Lees het bestand direct weer in als tekst-context voor het LLM
-            with open(export_filename, "r", encoding="utf-8") as f:
-                exhibition_data = json.load(f)
-
-            # Formatteer dit compact voor het model
-            json_string = json.dumps(exhibition_data, indent=2, ensure_ascii=False)
-            context_prefix = f"[Systeem info: exhibition.json is succesvol opgeslagen]\nHier is de huidige tentoonstellingsdata uit exhibition.json:\n```json\n{json_string}\n```\n\nGebruikersvraag over deze data: "
-
-        except Exception as e:
-            print(f"Achtergrond export mislukt: {str(e)}")
-            # We gaan door, maar zonder de bestandscontext
-            context_prefix = "[Systeem info: Automatische export naar exhibition.json mislukt]\n"
-
-    model = MODULES.get("chat_model")
-    if model is None:
+    assistant = MODULES.get("curation_assistant")
+    if assistant is None:
         return jsonify({"error": "No chat model configured (set CHAT_MODEL in .env)."}), 503
 
     try:
-        # Combineer de bestandsinhoud met de vraag van de gebruiker
-        full_message = f"{context_prefix}{user_message}"
-        reply = generate_chat_response(model, full_message)
-        return jsonify({"reply": reply})
+        reply = assistant.reply(message, items, exhibition_theme)
     except ChatModelError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
         return jsonify({"error": f"Chat model error: {e}"}), 500
+
+    MODULES["logger"].log_chat(message, reply, items, exhibition_theme)
+    return jsonify({"reply": reply})
 
 
 if __name__ == "__main__":

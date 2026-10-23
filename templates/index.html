@@ -605,7 +605,7 @@
 
     #pool-section[hidden] { display: none; }
 
-    /* ── Chatbox Assistant ──────────────────────────────────────────────── */
+    /* ── Curation assistant (chat) ──────────────────────────────────────── */
     #chat-section {
       margin-top: 40px;
       background: var(--card-bg);
@@ -629,6 +629,7 @@
       max-width: 85%;
       padding: 8px 12px;
       line-height: 1.4;
+      white-space: pre-wrap;   /* keep the line breaks of themed summaries */
     }
 
     .chat-msg.user {
@@ -736,22 +737,21 @@
 
   <div id="err-area"></div>
 
-  <!-- ── Chatbox Assistant Section ────────────────────────────────────── -->
-    <section id="chat-section">
-      <div class="section-meta">
-        <span class="section-label">🏛️ AI Curation Assistant</span>
-        <span class="section-stat" id="chat-status">Llama 3.2 lokaal actief</span>
-      </div>
-
-      <div id="chat-window">
-        <div class="chat-msg assistant">Hi! I am your Museum Curator Assistant. Send me 'summary' to get the commonalities and differences of the selected items.</div>
-      </div>
-
-      <form id="chat-form" onsubmit="sendMessage(event)">
-        <input type="text" id="chat-input" placeholder="Stel een vraag aan de AI..." autocomplete="off">
-        <button type="submit" class="search-btn">Verstuur</button>
-      </form>
-    </section>
+  {% if chat_model_key %}
+  <section id="chat-section">
+    <div class="section-meta">
+      <span class="section-label">Curation Assistant</span>
+      <span class="section-stat">{{ chat_model_key }}</span>
+    </div>
+    <div id="chat-window">
+      <div class="chat-msg assistant">Ask me about your selection, or send 'summary' for the recurring themes and connections in it.</div>
+    </div>
+    <form id="chat-form">
+      <input type="text" id="chat-input" placeholder="Ask about your selection…" autocomplete="off">
+      <button type="submit" class="search-btn">Send</button>
+    </form>
+  </section>
+  {% endif %}
 </main>
 
 <script>
@@ -1295,10 +1295,50 @@
     }
   }
 
+  /* ── Chat ───────────────────────────────────────────────────────────── */
+  // Only rendered when a CHAT_MODEL is configured. Each message is sent with
+  // the current selection and exhibition theme; the server keeps no history.
+  const chatForm   = document.getElementById('chat-form');
+  const chatInput  = document.getElementById('chat-input');
+  const chatWindow = document.getElementById('chat-window');
+
+  function addChatMsg(role, text) {
+    const msg = el('div', `chat-msg ${role}`, text);
+    chatWindow.appendChild(msg);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+    return msg;
+  }
+
+  async function sendChat(e) {
+    e.preventDefault();
+    const text = chatInput.value.trim();
+    if (!text) return;
+    chatInput.value = '';
+    addChatMsg('user', text);
+    const reply = addChatMsg('assistant', '…');
+    const sendBtn = chatForm.querySelector('button');
+    sendBtn.disabled = true;
+    try {
+      const r = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, items: selected, exhibition_theme: exhibitionTheme() }),
+      });
+      const d = await r.json();
+      reply.textContent = r.ok ? d.reply : 'Error: ' + (d.error || 'chat failed');
+    } catch (err) {
+      reply.textContent = 'Error: could not reach the server.';
+    } finally {
+      sendBtn.disabled = false;
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+  }
+
   /* ── Wire up ────────────────────────────────────────────────────────── */
   prevBtn.addEventListener('click', prevBatch);
   nextBtn.addEventListener('click', nextBatch);
   exportBtn.addEventListener('click', doExport);
+  if (chatForm) chatForm.addEventListener('submit', sendChat);
 
   if (MODE === 'category_select') {
     let selectedCats = new Set();
@@ -1406,61 +1446,4 @@
 
 </script>
 </body>
-
-<script>
-    async function sendMessage(event) {
-    event.preventDefault();
-    const inputEl = document.getElementById('chat-input');
-    const windowEl = document.getElementById('chat-window');
-    const text = inputEl.value.trim();
-
-    if (!text) return;
-
-    // 1. Toon het bericht van de gebruiker in de chatbox UI
-    windowEl.innerHTML += `<div class="chat-msg user">${text}</div>`;
-    inputEl.value = '';
-    windowEl.scrollTop = windowEl.scrollHeight;
-
-    // Maak een tijdelijke 'aan het laden' indicator
-    const botMsgId = 'msg-' + Date.now();
-    windowEl.innerHTML += `<div class="chat-msg assistant" id="${botMsgId}">...</div>`;
-    windowEl.scrollTop = windowEl.scrollHeight;
-
-    // 2. Verzamel de huidige tentoonstellingsdata (hetzelfde als bij export)
-    // Let op: vervang 'huidigeItemsArray' en 'huidigeMetaNaam' door de echte variabelen
-    // die jouw frontend gebruikt om de geselecteerde objecten in de UI bij te houden.
-    const currentItems = typeof pool !== 'undefined' ? pool : []; // OF de variabele van je geselecteerde/displayed items
-    const currentMeta = {
-      source: "chatbox_trigger",
-      exhibition_theme: exhibitionTheme(),
-      timestamp: new Date().toISOString()
-    };
-
-    try {
-      // 3. Verstuur het bericht EN de tentoonstellingsdata naar de Flask backend
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          items: selected,  // Dit activeert de export op de achtergrond
-          meta: currentMeta
-        })
-      });
-
-      const data = await response.json();
-      const botCell = document.getElementById(botMsgId);
-
-      if (response.ok && data.reply) {
-        botCell.innerText = data.reply;
-      } else {
-        botCell.innerText = "Fout van server: " + (data.error || "Onbekende fout");
-      }
-    } catch (error) {
-      document.getElementById(botMsgId).innerText = "Fout: Kan geen verbinding maken met de backend.";
-    }
-    windowEl.scrollTop = windowEl.scrollHeight;
-  }
-</script>
-
 </html>

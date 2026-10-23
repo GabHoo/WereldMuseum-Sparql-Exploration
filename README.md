@@ -32,6 +32,7 @@ KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
 SELECTION=random                  # random | title_cluster
 EXPORTER=json                     # json
 RETRIEVAL_EVALUATOR=              # diversity | blank = off
+CHAT_MODEL=local_hf               # local_hf | nebula | blank = off (curation assistant)
 ```
 
 ### Search results
@@ -69,6 +70,19 @@ KEYWORD_MATCHING_THESAURUS_FILES=collections/wereld_museum/thesaurus1.csv,collec
 ```
 Expected columns: `concept, prefLabel, broad, altLabels` (altLabels pipe-separated).
 
+### Exhibition theme and curation assistant
+
+The **Theme** box next to the search describes the exhibition's perspective, e.g. *"Central Asian items significant to the nomadic lifestyle"*. It is stored as `exhibition_theme` in the export meta and the run log, and given to the curation assistant. It does not change the search results.
+
+The curation assistant (chat box under the selection) answers questions about the selected items; `summary` gives the recurring themes and connections in the selection rather than item-by-item descriptions.
+
+| Key | How it works |
+|-----|-------------|
+| `local_hf` | Hugging Face model on this machine (`CHAT_LOCAL_MODEL`); gated models need a Hugging Face login |
+| `nebula` | VU Nebula service (`NEBULA_API_KEY`, `NEBULA_MODEL`) |
+
+`CHAT_CONTEXT_FIELDS` sets which Artifact fields of each selected item the model sees. Leave `CHAT_MODEL` blank to hide the assistant.
+
 ---
 
 ## Add a new module implementation
@@ -97,6 +111,8 @@ modules/
   embedding.py      Shared text-embedding model
   retrieval_evaluator/ Optional pool diversity / surprise metrics
   exporter/         Export formats
+  chat_model/       Chat models for the curation assistant (local_hf, nebula)
+  curation_assistant.py  Chat prompt + selection context sent to the chat model
   exhibition_builder/ Downstream exhibition layouts (skeleton)
 templates/
   index.html        Single-page curation UI

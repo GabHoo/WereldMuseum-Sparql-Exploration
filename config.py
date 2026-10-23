@@ -168,6 +168,14 @@ def _build_chat_model(key: str):
     return cls()
 
 
+def _build_curation_assistant(chat_key: str):
+    from modules.curation_assistant import DEFAULT_CONTEXT_FIELDS, CurationAssistant
+    return CurationAssistant(
+        model=_build_chat_model(chat_key),
+        context_fields=os.getenv("CHAT_CONTEXT_FIELDS", DEFAULT_CONTEXT_FIELDS),
+    )
+
+
 def build_modules() -> dict:
     qg_key  = os.getenv("QUERY_GENERATION", "category_select")
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
@@ -190,5 +198,6 @@ def build_modules() -> dict:
     if re_key:
         modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)
     if chat_key:
-        modules["chat_model"] = _build_chat_model(chat_key)
+        modules["curation_assistant"] = _build_curation_assistant(chat_key)
+        modules["chat_model_key"]     = chat_key
     return modules
