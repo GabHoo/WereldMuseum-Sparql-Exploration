@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime, timezone
 
@@ -155,6 +156,56 @@ def export():
         mimetype="application/json",
         headers={"Content-Disposition": "attachment; filename=exhibition.json"},
     )
+
+
+@app.route("/exhibition", methods=["POST"])
+def exhibition():
+    """
+    Build Exhibition: the curation page posts the selection as a form field
+    `export` = JSON { items, meta } (a form post, so the exhibition opens in a
+    new tab). Returns the page produced by the configured ExhibitionBuilder.
+    """
+    try:
+        data = json.loads(request.form.get("export", "{}"))
+    except ValueError:
+        return jsonify({"error": "export is not valid JSON"}), 400
+    items = data.get("items", [])
+    meta = data.get("meta", {})
+    meta.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+
+    if not items:
+        return jsonify({"error": "No items to build an exhibition from"}), 400
+
+    export_data = {
+        "meta":  meta,
+        "items": [
+            {"id": item["id"], "title": item["title"], "properties": item.get("properties", {})}
+            for item in items
+        ],
+    }
+    return MODULES["exhibition_builder"].build(export_data)
+
+
+@app.route("/exhibition/render", methods=["POST"])
+def exhibition_render():
+    """
+    Multipart form: scene (PNG composed on the exhibition page), description,
+    variation (0 = faithful). Returns the rendered exhibition as a PNG.
+    """
+    scene = request.files.get("scene")
+    if scene is None:
+        return jsonify({"error": "scene image is required"}), 400
+    try:
+        png = MODULES["exhibition_builder"].render(
+            scene.read(),
+            request.form.get("description", "").strip(),
+            int(request.form.get("variation", 0)),
+        )
+    except NotImplementedError:
+        return jsonify({"error": "This exhibition builder does not render scenes"}), 501
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return Response(png, mimetype="image/png")
 
 
 if __name__ == "__main__":

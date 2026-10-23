@@ -42,6 +42,9 @@ REGISTRY = {
     "retrieval_evaluator": {
         "diversity": "modules.retrieval_evaluator.diversity_evaluator.DiversityEvaluator",
     },
+    "exhibition_builder": {
+        "digital_wall": "modules.exhibition_builder.digital_wall.DigitalWall",
+    },
 }
 
 
@@ -109,6 +112,17 @@ def _build_exporter(key: str):
     return _load_class("exporter", key)()
 
 
+def _build_exhibition_builder(key: str):
+    cls = _load_class("exhibition_builder", key)
+    if key == "digital_wall":
+        return cls(
+            api_key=os.getenv("OPENAI_API_KEY", ""),
+            image_model=os.getenv("DIGITAL_WALL_IMAGE_MODEL", "gpt-image-2"),
+            image_size=os.getenv("DIGITAL_WALL_IMAGE_SIZE", "1024x1024"),
+        )
+    return cls()
+
+
 def _build_logger():
     from modules.run_logger import RunLogger
     return RunLogger(
@@ -152,6 +166,7 @@ def build_modules() -> dict:
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
     sel_key = os.getenv("SELECTION", "random")
     exp_key = os.getenv("EXPORTER", "json")
+    eb_key  = os.getenv("EXHIBITION_BUILDER", "digital_wall")
     re_key  = os.getenv("RETRIEVAL_EVALUATOR", "").strip()
 
     knowledge_base = _build_knowledge_base(kb_key)
@@ -162,6 +177,7 @@ def build_modules() -> dict:
         "image_cache":          _build_image_cache(),
         "selection":            _build_selection(sel_key),
         "exporter":             _build_exporter(exp_key),
+        "exhibition_builder":   _build_exhibition_builder(eb_key),
         "logger":               _build_logger(),
         "query_generation_key": qg_key,
     }

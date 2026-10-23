@@ -31,6 +31,7 @@ CONCEPT_MATCHER=thesaurus         # thesaurus (used by concept_query)
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
 SELECTION=random                  # random | title_cluster
 EXPORTER=json                     # json
+EXHIBITION_BUILDER=digital_wall   # digital_wall
 RETRIEVAL_EVALUATOR=              # diversity | blank = off
 ```
 
@@ -69,6 +70,14 @@ KEYWORD_MATCHING_THESAURUS_FILES=collections/wereld_museum/thesaurus1.csv,collec
 ```
 Expected columns: `concept, prefLabel, broad, altLabels` (altLabels pipe-separated).
 
+### Exhibition builder
+
+*Build Exhibition* opens the selection in a new tab, in the page of the configured builder.
+
+| Key | How it works |
+|-----|-------------|
+| `digital_wall` | Wall editor: drag the selected objects onto a gallery wall, draw, add text and props. *Done → Generate* turns the scene into photorealistic exhibition renders via the OpenAI image-edit API (needs `OPENAI_API_KEY`; `DIGITAL_WALL_IMAGE_MODEL`, default `gpt-image-2`). |
+
 ---
 
 ## Add a new module implementation
@@ -97,9 +106,12 @@ modules/
   embedding.py      Shared text-embedding model
   retrieval_evaluator/ Optional pool diversity / surprise metrics
   exporter/         Export formats
-  exhibition_builder/ Downstream exhibition layouts (skeleton)
+  exhibition_builder/ Exhibition pages built from the selection (digital_wall)
 templates/
   index.html        Single-page curation UI
+  digital_wall.html Wall editor page (DigitalWall)
+static/
+  digital_wall/     Wall editor script, styles and prop images
 .env.example        Documents all environment variables
 DESIGN.md           Full architecture and module specifications
 ```

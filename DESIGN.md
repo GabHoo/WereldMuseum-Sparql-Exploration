@@ -369,6 +369,24 @@ Each record automatically gets a `timestamp` field (UTC ISO-8601).
 
 ---
 
+### 8. ExhibitionBuilder
+
+Turns the selection into an exhibition. *Build Exhibition* posts `{ items, meta }` as a form to `POST /exhibition` (opens in a new tab, so the curation page keeps its state); the route shapes it like the export file and returns the builder's page.
+
+```python
+class ExhibitionBuilder(ABC):
+    def build(self, export_data: dict) -> str: ...      # { meta, items } → HTML page
+    def render(self, scene_png: bytes, description: str, variation: int) -> bytes: ...  # optional
+```
+
+`render()` is optional (default `NotImplementedError` → `/exhibition/render` answers 501); it is for builders whose page lets the curator compose a scene.
+
+| Name | Key | How it works |
+|------|-----|--------------|
+| `DigitalWall` | `digital_wall` | `templates/digital_wall.html` + `static/digital_wall/` (Fabric.js): the selection appears as thumbnails (via `/thumb`, so the canvas stays exportable) to drag onto a gallery wall, with pen, eraser, text, undo and props (pillar, frame). *Done* sends the flattened scene, a description and a variation count (1–5) to `/exhibition/render`, one call per variation: variation 0 renders the arrangement faithfully, 1–4 reimagine it in fixed gallery styles. Uses the OpenAI image-edit API via the `openai` client (`OPENAI_API_KEY`, `DIGITAL_WALL_IMAGE_MODEL` default `gpt-image-2`, `DIGITAL_WALL_IMAGE_SIZE` default `1024x1024`); without a key the editor works and Generate shows the error. |
+
+---
+
 ## Default Configuration & Implementation Selection
 
 Configuration lives in two files:
@@ -380,6 +398,7 @@ CONCEPT_MATCHER=thesaurus          # used by concept_query
 KNOWLEDGE_BASE=sparql_endpoint
 SELECTION=random
 EXPORTER=json
+EXHIBITION_BUILDER=digital_wall
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
 TITLE_CLUSTER_FIELDS=title         # used by SELECTION=title_cluster
 TITLE_CLUSTER_STEERING_WEIGHT=0.6
@@ -417,6 +436,9 @@ REGISTRY = {
     },
     "retrieval_evaluator": {
         "diversity": "modules.retrieval_evaluator.diversity_evaluator.DiversityEvaluator",
+    },
+    "exhibition_builder": {
+        "digital_wall": "modules.exhibition_builder.digital_wall.DigitalWall",
     },
 }
 ```
@@ -557,6 +579,8 @@ Infrastructure behind `/thumb`. On the first request for an image URL it downloa
 | `POST` | `/search` | `{ query: str, n: int }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
 | `POST` | `/next` | `{ pool: [...], n: int, history: {...} }` | `{ displayed: [...], pool: [...] }` |
 | `POST` | `/export` | `{ items: [...], meta: {...} }` | JSON file download |
+| `POST` | `/exhibition` | form field `export` = JSON `{ items, meta }` | HTML page from the ExhibitionBuilder |
+| `POST` | `/exhibition/render` | multipart: `scene` (PNG), `description`, `variation` | Rendered PNG; `501` if the builder doesn't render, `500` with `{error}` on failure |
 | `GET` | `/thumb?url=…` | — | Cached JPEG thumbnail; `404` if the image is a placeholder, `403` if the host is not allowed, `502` if it can't be fetched |
 
 ---
@@ -600,9 +624,9 @@ museum_curation/
 │   ├── exporter/
 │   │   ├── _stub.py
 │   │   └── json_exporter.py
-│   └── exhibition_builder/              # downstream consumer of the export (skeleton)
+│   └── exhibition_builder/              # exhibition page built from the selection
 │       ├── _stub.py
-│       └── digital_wall.py
+│       └── digital_wall.py              # wall editor + OpenAI photorealistic render
 ├── collections/
 │   └── wereld_museum/                   # graph-specific utility space
 │       ├── wereldmuseum_categories.json # label → concept URI mapping (optional override)
@@ -614,7 +638,9 @@ museum_curation/
 ├── .env.example                         # committed, documents all options
 ├── app.py                               # Flask: thin orchestration only
 ├── templates/
-│   └── index.html
+│   ├── index.html
+│   └── digital_wall.html                # DigitalWall editor page
+├── static/digital_wall/                 # editor script, styles, prop images
 ├── requirements.txt
 ├── .cache/thumbnails/                 # gitignored; written by ImageCache
 └── runs.log                             # gitignored; written by RunLogger

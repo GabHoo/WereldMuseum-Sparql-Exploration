@@ -8,13 +8,14 @@ class MyExhibitionBuilder(ExhibitionBuilder):
       2. Set EXHIBITION_BUILDER=<your-key> in .env
     """
 
-    def build(self, export_data: dict) -> None:
+    def build(self, export_data: dict) -> str:
         """
         export_data : dict with keys:
             "meta"  — { query, sparql, timestamp }
             "items" — list of { id, title, properties: {...} }
 
-        Produce whatever output your exhibition format requires
-        (HTML page, PDF, API call to a wall renderer, …).
+        Return the exhibition as an HTML page; app.py serves it at /exhibition
+        when the user clicks *Build Exhibition*. Optionally override render()
+        if the page composes scenes that should be turned into images.
         """
         raise NotImplementedError

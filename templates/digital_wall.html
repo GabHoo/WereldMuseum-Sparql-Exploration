@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Exhibition Canvas</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='digital_wall/styles.css') }}" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+</head>
+<body>
+  <header id="toolbar">
+    <div class="brand">🖼 Exhibition Canvas</div>
+
+    <div class="tools">
+      <button id="tool-select" class="tool" data-tool="select" title="Select / move / resize">Select</button>
+      <button id="tool-pen" class="tool" data-tool="pen" title="Freehand pen">Pen</button>
+      <button id="tool-eraser" class="tool" data-tool="eraser" title="Eraser">Eraser</button>
+
+      <span class="divider"></span>
+
+      <label class="field" title="Brush / text color">
+        Color <input id="brush-color" type="color" value="#e23b3b" />
+      </label>
+      <label class="field" title="Brush size">
+        Size <input id="brush-size" type="range" min="1" max="40" value="6" />
+      </label>
+
+      <span class="divider"></span>
+
+      <button id="tool-text" class="tool" title="Add a text box">Add Text</button>
+      <button id="btn-undo" class="tool" title="Undo last action">Undo</button>
+      <button id="btn-clear" class="tool" title="Clear the canvas">Clear</button>
+    </div>
+
+    <button id="btn-done" class="primary" title="Finish and generate">Done</button>
+  </header>
+
+  <div id="main">
+    <aside id="gallery">
+      <h2>Selection</h2>
+      <div class="gallery-actions">
+        <label class="file-btn">
+          Load JSON
+          <input id="load-json" type="file" accept=".json,application/json" hidden />
+        </label>
+        <label class="file-btn">
+          Add image
+          <input id="add-image" type="file" accept="image/*" hidden />
+        </label>
+      </div>
+      <p class="hint">Click a thumbnail to add it to the canvas (or drag it onto the wall).</p>
+      <div id="thumbs"></div>
+    </aside>
+
+    <section id="stage">
+      <canvas id="c"></canvas>
+      <div id="props">
+        <span class="props-label">Props</span>
+        <img class="prop" src="{{ url_for('static', filename='digital_wall/pillar.png') }}" alt="Pillar" draggable="true" title="Pillar — click or drag onto the wall" />
+        <img class="prop" src="{{ url_for('static', filename='digital_wall/frame.png') }}" alt="Frame" draggable="true" title="Frame — click or drag onto the wall" />
+      </div>
+    </section>
+  </div>
+
+  <!-- Done modal -->
+  <div id="done-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Describe your exhibition</h2>
+      <p class="hint">Describe the scene you built. This is sent with your composed image to transform it into a photorealistic museum exhibition.</p>
+      <textarea id="scene-desc" rows="4" placeholder="e.g. Three colonial-era costumes arranged on a gallery wall with hand-drawn arrows linking them to their origins…"></textarea>
+      <label class="modal-field">
+        Variations
+        <input id="variation-count" type="number" min="1" max="5" value="3" />
+      </label>
+      <p class="hint subtle">One faithful render of your arrangement, plus creative re-imaginings.</p>
+
+      <div class="modal-actions">
+        <button id="btn-generate" class="primary">Generate</button>
+        <button id="done-cancel" class="ghost">Cancel</button>
+      </div>
+      <p id="done-error" class="error hidden"></p>
+    </div>
+  </div>
+
+  <!-- Result modal -->
+  <div id="result-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h2>Your museum exhibition</h2>
+      <div class="album">
+        <button id="album-prev" class="album-nav" title="Previous" aria-label="Previous">‹</button>
+        <img id="result-img" alt="Generated museum exhibition" />
+        <button id="album-next" class="album-nav" title="Next" aria-label="Next">›</button>
+      </div>
+      <p id="album-counter" class="album-counter"></p>
+      <div class="modal-actions">
+        <a id="btn-download" class="primary" download="exhibition.png">Download</a>
+        <button id="result-back" class="ghost">Back to editing</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div id="loading" class="modal hidden">
+    <div class="spinner-box">
+      <div class="spinner"></div>
+      <p>Transforming your scene…</p>
+    </div>
+  </div>
+
+  <script>
+    // The curated selection, as posted by the curation page: { meta, items }
+    const EXPORT_DATA = {{ export_data|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='digital_wall/app.js') }}"></script>
+</body>
+</html>
