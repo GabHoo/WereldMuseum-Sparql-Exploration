@@ -7,7 +7,9 @@ Pipeline (/search):
       │  (finds ?artifact URIs)            (URIs → Artifact objects, modules/artifact.py)
       │  (concept_query delegates text → concepts to a ConceptMatcher)
       └─ query features ──▶ RetrievalEvaluator (optional)
-Then /next re-runs SelectionStrategy and /export runs Exporter.
+Then /next re-runs SelectionStrategy, /export runs Exporter, /exhibition
+runs ExhibitionBuilder and /api/chat runs a ChatModel (through
+modules/curation_assistant.py).
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -150,12 +152,29 @@ class RetrievalEvaluator(ABC):
 
 
 class ExhibitionBuilder(ABC):
+    """
+    Turns a curated selection into an exhibition. app.py calls build() when the
+    user clicks *Build Exhibition* and serves the returned page (/exhibition).
+    """
+
     @abstractmethod
-    def build(self, export_data: dict) -> None:
+    def build(self, export_data: dict) -> str:
         """
         Produce a digital exhibition from a curated selection.
-        export_data: the dict produced by Exporter — { meta: {...}, items: [...] }
+        export_data: same shape as the export file — { meta: {...}, items: [...] },
+                     items are { id, title, properties: Artifact dict }
+        Returns the exhibition as an HTML page.
         """
+
+    def render(self, scene_png: bytes, description: str, variation: int) -> bytes:
+        """
+        Turn a scene the user composed on the exhibition page into a
+        photorealistic exhibition image (PNG bytes), served by /exhibition/render.
+        variation 0 is a faithful render; higher numbers are re-imaginings.
+        Default: not supported — only meaningful for builders whose page lets
+        the user compose a scene (DigitalWall).
+        """
+        raise NotImplementedError
 
 
 class ChatModelError(Exception):

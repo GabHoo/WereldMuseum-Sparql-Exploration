@@ -1,3 +1,6 @@
+import json
+import os
+import socket
 from datetime import datetime, timezone
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
@@ -186,5 +189,70 @@ def chat():
     return jsonify({"reply": reply})
 
 
+@app.route("/exhibition", methods=["POST"])
+def exhibition():
+    """
+    Build Exhibition: the curation page posts the selection as a form field
+    `export` = JSON { items, meta } (a form post, so the exhibition opens in a
+    new tab). Returns the page produced by the configured ExhibitionBuilder.
+    """
+    try:
+        data = json.loads(request.form.get("export", "{}"))
+    except ValueError:
+        return jsonify({"error": "export is not valid JSON"}), 400
+    items = data.get("items", [])
+    meta = data.get("meta", {})
+    meta.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+
+    if not items:
+        return jsonify({"error": "No items to build an exhibition from"}), 400
+
+    export_data = {
+        "meta":  meta,
+        "items": [
+            {"id": item["id"], "title": item["title"], "properties": item.get("properties", {})}
+            for item in items
+        ],
+    }
+    return MODULES["exhibition_builder"].build(export_data)
+
+
+@app.route("/exhibition/render", methods=["POST"])
+def exhibition_render():
+    """
+    Multipart form: scene (PNG composed on the exhibition page), description,
+    variation (0 = faithful). Returns the rendered exhibition as a PNG.
+    """
+    scene = request.files.get("scene")
+    if scene is None:
+        return jsonify({"error": "scene image is required"}), 400
+    try:
+        png = MODULES["exhibition_builder"].render(
+            scene.read(),
+            request.form.get("description", "").strip(),
+            int(request.form.get("variation", 0)),
+        )
+    except NotImplementedError:
+        return jsonify({"error": "This exhibition builder does not render scenes"}), 501
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return Response(png, mimetype="image/png")
+
+
+def _free_port(start: int) -> int:
+    """First port from `start` up that nothing on localhost is listening on."""
+    port = start
+    while True:
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+        port += 1
+
+
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # Several checkouts (git worktrees) can run side by side: 5000, 5001, …
+    # The debug reloader re-runs this file in a child process, which must
+    # reuse the parent's choice, so it is passed on through the environment.
+    port = int(os.environ.get("APP_PORT") or _free_port(5000))
+    os.environ["APP_PORT"] = str(port)
+    app.run(debug=True, port=port)

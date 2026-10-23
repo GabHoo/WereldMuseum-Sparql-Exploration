@@ -17,7 +17,7 @@ cp .env.example .env               # configure modules (defaults work out of the
 python app.py
 ```
 
-Open `http://127.0.0.1:5000`.
+Open `http://127.0.0.1:5000`. If port 5000 is taken (another checkout of the app, or macOS AirPlay Receiver), `app.py` uses the next free port — 5001, 5002, … — and prints the address it runs on.
 
 ---
 
@@ -31,6 +31,7 @@ CONCEPT_MATCHER=thesaurus         # thesaurus (used by concept_query)
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
 SELECTION=random                  # random | title_cluster
 EXPORTER=json                     # json
+EXHIBITION_BUILDER=digital_wall   # digital_wall
 RETRIEVAL_EVALUATOR=              # diversity | blank = off
 CHAT_MODEL=local_hf               # local_hf | nebula | blank = off (curation assistant)
 ```
@@ -83,6 +84,14 @@ The curation assistant (chat box under the selection) answers questions about th
 
 `CHAT_CONTEXT_FIELDS` sets which Artifact fields of each selected item the model sees. Leave `CHAT_MODEL` blank to hide the assistant.
 
+### Exhibition builder
+
+*Build Exhibition* opens the selection in a new tab, in the page of the configured builder.
+
+| Key | How it works |
+|-----|-------------|
+| `digital_wall` | Wall editor: drag the selected objects onto a gallery wall, draw, add text and props. *Done → Generate* turns the scene into photorealistic exhibition renders via the OpenAI image-edit API (needs `OPENAI_API_KEY`; `DIGITAL_WALL_IMAGE_MODEL`, default `gpt-image-2`). |
+
 ---
 
 ## Add a new module implementation
@@ -113,9 +122,12 @@ modules/
   exporter/         Export formats
   chat_model/       Chat models for the curation assistant (local_hf, nebula)
   curation_assistant.py  Chat prompt + selection context sent to the chat model
-  exhibition_builder/ Downstream exhibition layouts (skeleton)
+  exhibition_builder/ Exhibition pages built from the selection (digital_wall)
 templates/
   index.html        Single-page curation UI
+  digital_wall.html Wall editor page (DigitalWall)
+static/
+  digital_wall/     Wall editor script, styles and prop images
 .env.example        Documents all environment variables
 DESIGN.md           Full architecture and module specifications
 ```

@@ -1334,10 +1334,25 @@
     }
   }
 
+  /* ── Build exhibition ───────────────────────────────────────────────── */
+  // A regular form post (not fetch) so the exhibition page opens in a new tab
+  // and this page keeps its state.
+  function buildExhibition() {
+    meta.exhibition_theme = exhibitionTheme();
+    const form  =Object.assign(document.createElement('form'), { method: 'POST', action: '/exhibition', target: '_blank' });
+    const input = Object.assign(document.createElement('input'), { type: 'hidden', name: 'export' });
+    input.value = JSON.stringify({ items: selected, meta });
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }
+
   /* ── Wire up ────────────────────────────────────────────────────────── */
   prevBtn.addEventListener('click', prevBatch);
   nextBtn.addEventListener('click', nextBatch);
   exportBtn.addEventListener('click', doExport);
+  exhibitionBtn.addEventListener('click', buildExhibition);
   if (chatForm) chatForm.addEventListener('submit', sendChat);
 
   if (MODE === 'category_select') {

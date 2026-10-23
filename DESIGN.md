@@ -9,7 +9,7 @@ A modular, graph-agnostic tool that helps museum curators build exhibitions by q
 ## User Flow
 
 ```
-User types NL query (or clicks a category)
+User types NL query (or clicks a category), optionally an exhibition theme
         │
         ▼
   [QueryGeneration] ──converts──▶ FIND query (SELECT DISTINCT ?artifact … LIMIT 100)
@@ -29,7 +29,9 @@ User types NL query (or clicks a category)
                      │                               features, pool, history, exports
                      ├─ "Next batch" ──▶ SelectionStrategy picks next N (seen items never return)
                      │
-                     └─ enough Yes ──▶ [Exporter] ──▶ JSON download
+                     └─ enough Yes ─┬─▶ [Exporter] ──▶ JSON download
+                                    ├─▶ [ExhibitionBuilder] ──▶ exhibition page (new tab)
+                                    └─▶ [CurationAssistant → ChatModel] ──▶ chat about the selection
 ```
 
 ---
@@ -46,7 +48,8 @@ User types NL query (or clicks a category)
 | 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
 | 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
 | 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
-| 8 | ChatModel | `CHAT_MODEL` | `chat(messages) -> str` (used by the CurationAssistant, optional) |
+| 8 | ExhibitionBuilder | `EXHIBITION_BUILDER` | `build(export_data) -> str` (HTML page), optional `render(...)` |
+| 9 | ChatModel | `CHAT_MODEL` | `chat(messages) -> str` (used by the CurationAssistant, optional) |
 | — | CurationAssistant | `CHAT_CONTEXT_FIELDS` | `reply(message, items, exhibition_theme) -> str` (infrastructure around the ChatModel) |
 
 All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`).
@@ -374,7 +377,25 @@ Each record automatically gets a `timestamp` field (UTC ISO-8601).
 
 ---
 
-### 8. ChatModel (AI curation assistant)
+### 8. ExhibitionBuilder
+
+Turns the selection into an exhibition. *Build Exhibition* posts `{ items, meta }` as a form to `POST /exhibition` (opens in a new tab, so the curation page keeps its state); the route shapes it like the export file and returns the builder's page.
+
+```python
+class ExhibitionBuilder(ABC):
+    def build(self, export_data: dict) -> str: ...      # { meta, items } → HTML page
+    def render(self, scene_png: bytes, description: str, variation: int) -> bytes: ...  # optional
+```
+
+`render()` is optional (default `NotImplementedError` → `/exhibition/render` answers 501); it is for builders whose page lets the curator compose a scene.
+
+| Name | Key | How it works |
+|------|-----|--------------|
+| `DigitalWall` | `digital_wall` | `templates/digital_wall.html` + `static/digital_wall/` (Fabric.js): the selection appears as thumbnails (via `/thumb`, so the canvas stays exportable) to drag onto a gallery wall, with pen, eraser, text, undo and props (pillar, frame). *Done* sends the flattened scene, a description and a variation count (1–5) to `/exhibition/render`, one call per variation: variation 0 renders the arrangement faithfully, 1–4 reimagine it in fixed gallery styles. Uses the OpenAI image-edit API via the `openai` client (`OPENAI_API_KEY`, `DIGITAL_WALL_IMAGE_MODEL` default `gpt-image-2`, `DIGITAL_WALL_IMAGE_SIZE` default `1024x1024`); without a key the editor works and Generate shows the error. |
+
+---
+
+### 9. ChatModel (curation assistant)
 
 The chat box under the selection sends the curator's message, the kept items and the exhibition theme to `POST /api/chat`. The route hands them to the `CurationAssistant` (`modules/curation_assistant.py`), which config.py builds around the configured ChatModel. The assistant writes each item as one line of text from the Artifact fields in `CHAT_CONTEXT_FIELDS` (default `title,type,material,place,date,maker,intended_use`, via `metadata_linearization`), adds the exhibition theme, and sends both with the message. It is stateless: earlier messages are not resent.
 
@@ -412,6 +433,7 @@ CONCEPT_MATCHER=thesaurus          # used by concept_query
 KNOWLEDGE_BASE=sparql_endpoint
 SELECTION=random
 EXPORTER=json
+EXHIBITION_BUILDER=digital_wall
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
 TITLE_CLUSTER_FIELDS=title         # used by SELECTION=title_cluster
 TITLE_CLUSTER_STEERING_WEIGHT=0.6
@@ -449,6 +471,9 @@ REGISTRY = {
     },
     "retrieval_evaluator": {
         "diversity": "modules.retrieval_evaluator.diversity_evaluator.DiversityEvaluator",
+    },
+    "exhibition_builder": {
+        "digital_wall": "modules.exhibition_builder.digital_wall.DigitalWall",
     },
 }
 ```
@@ -590,6 +615,8 @@ Infrastructure behind `/thumb`. On the first request for an image URL it downloa
 | `POST` | `/search` | `{ query: str, n: int, exhibition_theme: str }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
 | `POST` | `/next` | `{ pool: [...], n: int, history: {...} }` | `{ displayed: [...], pool: [...] }` |
 | `POST` | `/export` | `{ items: [...], meta: {...} }` | JSON file download |
+| `POST` | `/exhibition` | form field `export` = JSON `{ items, meta }` | HTML page from the ExhibitionBuilder |
+| `POST` | `/exhibition/render` | multipart: `scene` (PNG), `description`, `variation` | Rendered PNG; `501` if the builder doesn't render, `500` with `{error}` on failure |
 | `POST` | `/api/chat` | `{ message: str, items: [...], exhibition_theme: str }` | `{ reply: str }`; `503` with `{ error }` when no model is configured or it cannot answer |
 | `GET` | `/thumb?url=…` | — | Cached JPEG thumbnail; `404` if the image is a placeholder, `403` if the host is not allowed, `502` if it can't be fetched |
 
@@ -639,9 +666,9 @@ museum_curation/
 │   │   ├── _stub.py
 │   │   ├── local_hf.py                  # local transformers pipeline + HF login
 │   │   └── nebula.py                    # VU Nebula (OpenAI-compatible) via openai client
-│   └── exhibition_builder/              # downstream consumer of the export (skeleton)
+│   └── exhibition_builder/              # exhibition page built from the selection
 │       ├── _stub.py
-│       └── digital_wall.py
+│       └── digital_wall.py              # wall editor + OpenAI photorealistic render
 ├── collections/
 │   └── wereld_museum/                   # graph-specific utility space
 │       ├── wereldmuseum_categories.json # label → concept URI mapping (optional override)
@@ -653,7 +680,9 @@ museum_curation/
 ├── .env.example                         # committed, documents all options
 ├── app.py                               # Flask: thin orchestration only
 ├── templates/
-│   └── index.html
+│   ├── index.html
+│   └── digital_wall.html                # DigitalWall editor page
+├── static/digital_wall/                 # editor script, styles, prop images
 ├── requirements.txt
 ├── .cache/thumbnails/                 # gitignored; written by ImageCache
 └── runs.log                             # gitignored; written by RunLogger
