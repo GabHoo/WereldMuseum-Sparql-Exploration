@@ -20,16 +20,18 @@ class RunLogger:
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None) -> None:
+    def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None,
+                   exhibition_theme: str = "") -> None:
         self._emit({
-            "event":          "search",
-            "query":          query,
-            "query_features": query_features or {},
-            "sparql":         sparql,
-            "pool_size":      len(pool),
-            "displayed_ids":  [i["id"] for i in displayed],
-            "pool":           pool,
-            "displayed":      displayed,
+            "event":            "search",
+            "query":            query,
+            "exhibition_theme": exhibition_theme,
+            "query_features":   query_features or {},
+            "sparql":           sparql,
+            "pool_size":        len(pool),
+            "displayed_ids":    [i["id"] for i in displayed],
+            "pool":             pool,
+            "displayed":        displayed,
         })
 
     def log_next(self, history: dict, displayed: list) -> None:

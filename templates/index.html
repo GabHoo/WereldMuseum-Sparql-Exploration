@@ -110,6 +110,22 @@
     #keyword-input::placeholder { color: var(--text-muted); }
     #keyword-input:focus { border-color: var(--accent); }
 
+    /* Exhibition theme: the curator's framing of the search */
+    #theme-input {
+      background: #fff;
+      border: 1px solid #b0a490;
+      color: var(--text-on-dark);
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      padding: 6px 12px;
+      flex: 1 1 280px;
+      max-width: 480px;
+      outline: none;
+    }
+
+    #theme-input::placeholder { color: var(--text-muted); }
+    #theme-input:focus { border-color: var(--accent); }
+
     .search-btn {
       background: var(--accent);
       border: 1px solid var(--accent);
@@ -668,6 +684,9 @@
       </div>
     </form>
   {% endif %}
+  <label for="theme-input">Theme</label>
+  <input id="theme-input" type="text" maxlength="200" autocomplete="off"
+         placeholder="e.g. Central Asian items significant to the nomadic lifestyle">
 </div>
 
 <div id="concept-tags" hidden></div>
@@ -744,7 +763,7 @@
   let selected       = [];   // accumulated yes-picks — persists across searches
   let currentMetrics = null; // last metrics response from /search
   let currentConcepts = [];  // concepts from /search: [{label, uri, feature}]
-  let meta     = { query: '', sparql: '' };
+  let meta     = { query: '', sparql: '', exhibition_theme: '' };
   let serverHistory = { accepted: [], rejected: [], seen: [] };
 
   // Batch navigation: each entry is {displayed: [...], choices: {id: 'yes'|'no'}}
@@ -774,8 +793,12 @@
   const metricSurprise  = document.getElementById('metric-surprise');
   const featureStats    = document.getElementById('feature-stats');
   const errArea     = document.getElementById('err-area');
+  const themeInput  = document.getElementById('theme-input');
 
   /* ── Helpers ────────────────────────────────────────────────────────── */
+  // Curator's framing of the exhibition, e.g. "items significant to nomadic life"
+  function exhibitionTheme() { return themeInput.value.trim(); }
+
   function esc(s) {
     return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -1143,7 +1166,7 @@
         const r = await fetch('/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: queries[0], n: N }),
+          body: JSON.stringify({ query: queries[0], n: N, exhibition_theme: exhibitionTheme() }),
         });
         const d = await r.json();
         if (!r.ok) { renderConcepts(d.concepts || []); throw new Error(d.error || 'Search failed'); }
@@ -1159,7 +1182,7 @@
           fetch('/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: q, n: N }),
+            body: JSON.stringify({ query: q, n: N, exhibition_theme: exhibitionTheme() }),
           }).then(r => r.json())
         ));
         firstPool   = mergePools(results.map(d => d.pool));
@@ -1176,7 +1199,7 @@
       }
 
       pool = firstPool;
-      meta = { query: queries.join(' + '), sparql: firstSparql };
+      meta = { query: queries.join(' + '), sparql: firstSparql, exhibition_theme: exhibitionTheme() };
       currentMetrics = firstMetrics || null;
       serverHistory.seen = firstDisplayed.map(i => i.id);
 
@@ -1247,6 +1270,8 @@
   /* ── Export ─────────────────────────────────────────────────────────── */
   async function doExport() {
     exportBtn.disabled = true;
+    // The theme may be refined after searching; export the current text
+    meta.exhibition_theme = exhibitionTheme();
     try {
       const r = await fetch('/export', {
         method: 'POST',
@@ -1407,6 +1432,7 @@
     const currentItems = typeof pool !== 'undefined' ? pool : []; // OF de variabele van je geselecteerde/displayed items
     const currentMeta = {
       source: "chatbox_trigger",
+      exhibition_theme: exhibitionTheme(),
       timestamp: new Date().toISOString()
     };
 

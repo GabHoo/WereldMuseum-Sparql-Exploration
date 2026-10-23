@@ -77,6 +77,9 @@ def search():
     # Extract the free-text query and the requested batch size from the request.
     nl_query = data.get("query", "").strip()
     n = int(data.get("n", config.N_PER_BATCH))
+    # Optional curator framing of the exhibition (e.g. "items significant to
+    # the nomadic lifestyle"). Not used for retrieval yet; only logged.
+    exhibition_theme = data.get("exhibition_theme", "").strip()
 
     # Backend validation: reject empty searches early so the rest of the pipeline
     # never runs on an invalid request.
@@ -124,7 +127,7 @@ def search():
     metrics = evaluator.score(pool, query_features) if evaluator else None
 
     # Persist the search trail for auditing/logging before returning the result.
-    MODULES["logger"].log_search(nl_query, sparql, pool, displayed, query_features)
+    MODULES["logger"].log_search(nl_query, sparql, pool, displayed, query_features, exhibition_theme)
     return jsonify({"sparql": sparql, "pool": pool, "displayed": displayed, "concepts": concepts, "metrics": metrics})
 
 
