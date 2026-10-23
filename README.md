@@ -17,7 +17,7 @@ cp .env.example .env               # configure modules (defaults work out of the
 python app.py
 ```
 
-Open `http://127.0.0.1:5000`.
+Open `http://127.0.0.1:5000`. If port 5000 is taken (another checkout of the app, or macOS AirPlay Receiver), `app.py` uses the next free port — 5001, 5002, … — and prints the address it runs on.
 
 ---
 

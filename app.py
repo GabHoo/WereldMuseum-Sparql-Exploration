@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 from datetime import datetime, timezone
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
@@ -208,5 +209,20 @@ def exhibition_render():
     return Response(png, mimetype="image/png")
 
 
+def _free_port(start: int) -> int:
+    """First port from `start` up that nothing on localhost is listening on."""
+    port = start
+    while True:
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+        port += 1
+
+
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # Several checkouts (git worktrees) can run side by side: 5000, 5001, …
+    # The debug reloader re-runs this file in a child process, which must
+    # reuse the parent's choice, so it is passed on through the environment.
+    port = int(os.environ.get("APP_PORT") or _free_port(5000))
+    os.environ["APP_PORT"] = str(port)
+    app.run(debug=True, port=port)
