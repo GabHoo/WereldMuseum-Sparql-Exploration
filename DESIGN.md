@@ -187,7 +187,7 @@ Picks which N items to show the user from the remaining pool, using feedback his
 |--|--|
 | **Input** | `pool: list[dict]` — all items from the query, each with a `score: float` field |
 | | `n: int` — number of items to return |
-| | `history: SelectionHistory` — `accepted: list[str]`, `rejected: list[str]`, `seen: set[str]` (item IDs) |
+| | `history: SelectionHistory` — `accepted: list[str]` (kept), `rejected: list[str]` (explicitly marked not relevant), `seen: set[str]` (item IDs) |
 | **Output** | `list[dict]` — n items from pool, all with IDs not in `history.seen` |
 | **Side effect** | May mutate `item["score"]` in pool to propagate rankings to the next round |
 
@@ -203,7 +203,9 @@ The random baseline filters `seen` items, then `random.sample(remaining, n)`.
 `RelevanceFeedbackStrategy` re-ranks the unseen pool after every batch from the curator's feedback, using the Representation module's vectors (§8), which `config.py` injects. Feedback accumulates over the query:
 
 - **Positives P**: `history.accepted` plus the selection bank, since an item can be kept after going back to an earlier batch. With `RERANK_CROSS_QUERY=false`, only kept items that are in the current pool count.
-- **Negatives N**: `history.rejected` minus P. "Shown but not kept" is a weak signal, so N weighs less (`RERANK_GAMMA=0.25` against `RERANK_BETA=1.0`).
+- **Negatives N**: `history.rejected` minus P. These are the objects the curator explicitly marked not relevant with the × on a pool card. Being shown and not kept, or being removed from the selection, is not a negative. N weighs less than P (`RERANK_GAMMA=0.5` against `RERANK_BETA=1.0`). Negatives persist across searches, follow `RERANK_CROSS_QUERY` as positives do, and are never shown again. One from an earlier query counts while its vector is still in the encoder cache.
+
+In the browser, the × appears when the mouse is over a card that isn't kept. Clicking it again un-marks the card, and Keep on a negative moves it to the selection. The selection panel has two tabs, **Selection** and **Negatives**, and a negative can be removed from the second. Changes take effect on the next batch.
 
 Each unseen candidate with a vector is scored, in the `RERANK_VIEW` space:
 
@@ -220,7 +222,7 @@ Vectors are filled in the background, so the strategy:
 
 Without feedback (the first batch of a query), without encoded feedback, or without the Representation module, it selects at random. What it did (mode, |P|, |N|, coverage, ranked and explored ids, scores) goes into the `rerank` field of the `search` and `next` log records.
 
-To compare it offline with random selection, run `python -m modules.selection.relevance_feedback <pool.json | export.json | runs.log> --target <concept URI>`. A simulated curator keeps the objects that have the target type, material or place. The command prints the acceptance rate, cumulative recall and batch diversity per batch. Without `--target`, it lists the most common concepts in the pool.
+To compare it offline with random selection, run `python -m modules.selection.relevance_feedback <pool.json | export.json | runs.log> --target <concept URI> [--neg-rate 0.3]`. A simulated curator keeps the objects that have the target type, material or place, and marks a share `--neg-rate` of the other objects shown as negatives. The command prints the acceptance rate, cumulative recall and batch diversity per batch. Without `--target`, it lists the most common concepts in the pool.
 
 ---
 
@@ -315,7 +317,7 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 | | |
 |--|--|
 | **Events logged** | `search` — query, query_features, generated SPARQL, full pool, first displayed batch |
-| | `next` — current history (accepted / rejected / seen), next displayed batch |
+| | `next` — current history (accepted / rejected / seen), next displayed batch. Since explicit negatives, `rejected` holds only the objects marked not relevant; older logs recorded every shown-but-not-kept object there |
 | | `export` — exported items and metadata |
 | **Format** | JSON Lines (`.jsonl` / `.log`): one `json.loads()`-able object per line, append-only |
 | **Config** | `LOG_FILE` — path to log file (default `runs.log`, gitignored via `*.log`) |

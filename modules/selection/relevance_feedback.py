@@ -4,9 +4,10 @@ the curator's feedback and the Representation module's object vectors.
 
 Feedback (accumulates over the whole query):
     positives P  history.accepted ∪ the selection bank (the kept objects).
-                 cross_query=False keeps only kept objects in the current pool.
-    negatives N  history.rejected − P. "Not kept" is a weak signal, so N
-                 weighs less than P (gamma < beta).
+    negatives N  history.rejected − P: the objects the curator explicitly
+                 marked not relevant. N weighs less than P (gamma < beta).
+    cross_query=False keeps only the P and N objects in the current pool.
+    Negatives are never shown again, also under a later query.
 
 Scoring of each unseen candidate c (vectors are L2-normalised, dot = cosine):
     rocchio  s(c) = c · (beta·centroid(P) − gamma·centroid(N))
@@ -27,7 +28,7 @@ Without feedback, or without the Representation module, it selects at random.
 
 Usage (CLI, offline simulation against the random baseline):
     python -m modules.selection.relevance_feedback <pool.json | export.json | runs.log> \\
-        [--target <concept URI>] [--batches 8] [--n 10] [--runs 5]
+        [--target <concept URI>] [--batches 8] [--n 10] [--runs 5] [--neg-rate 0.3]
 """
 import logging
 import random
@@ -96,7 +97,7 @@ def _mmr(cands: np.ndarray, scores: np.ndarray, n: int, lam: float) -> list:
 
 class RelevanceFeedbackStrategy(SelectionStrategy):
     def __init__(self, representation=None, view: str = "fused", scoring: str = "rocchio",
-                 beta: float = 1.0, gamma: float = 0.25, k: int = 3, mmr_lambda: float = 0.7,
+                 beta: float = 1.0, gamma: float = 0.5, k: int = 3, mmr_lambda: float = 0.7,
                  explore: float = 0.2, wait: float = 1.0, cross_query: bool = True,
                  rng: random.Random | None = None):
         if scoring not in ("rocchio", "knn"):
@@ -118,7 +119,7 @@ class RelevanceFeedbackStrategy(SelectionStrategy):
         self.last_debug: dict = {}   # what the last select() did, for the run log
 
     def select(self, pool: list, n: int, history: SelectionHistory) -> list:
-        seen = set(history.seen)
+        seen = set(history.seen) | set(history.rejected)
         cands = [item for item in pool if item["id"] not in seen]
         if self.rep is None:
             self.last_debug = {"mode": "random", "reason": "no representation"}
@@ -176,12 +177,14 @@ class RelevanceFeedbackStrategy(SelectionStrategy):
     def _feedback(self, pool: list, history: SelectionHistory) -> tuple:
         """(positive ids, negative ids), each without duplicates."""
         kept = self.rep.selection_bank.ids()
+        rejected = history.rejected
         if not self.cross_query:
             in_pool = {item["id"] for item in pool}
             kept = [i for i in kept if i in in_pool]
+            rejected = [i for i in rejected if i in in_pool]
         pos = list(dict.fromkeys(list(history.accepted) + kept))
         pos_set = set(pos)
-        neg = [i for i in dict.fromkeys(history.rejected) if i not in pos_set]
+        neg = [i for i in dict.fromkeys(rejected) if i not in pos_set]
         return pos, neg
 
     def _pending(self, ids: list) -> list:
@@ -228,8 +231,13 @@ def _concepts(item: dict) -> set:
     return {uri for field in _CONCEPT_FIELDS for uri in props.get(field) or []}
 
 
-def _simulate(strategy, rep, pool: list, relevant: set, batches: int, n: int) -> list:
-    """Per batch: (acceptance rate, cumulative recall, diversity of the batch)."""
+def _simulate(strategy, rep, pool: list, relevant: set, batches: int, n: int,
+              neg_rate: float, rng: random.Random) -> list:
+    """Per batch: (acceptance rate, cumulative recall, diversity of the batch).
+
+    The simulated curator keeps every relevant item shown and marks a share
+    neg_rate of the other items shown as negatives (only the clear misses).
+    """
     rep.sync_selection([])
     rep.wait("selection", timeout=None)
     history, kept, rows = SelectionHistory(), [], []
@@ -242,7 +250,8 @@ def _simulate(strategy, rep, pool: list, relevant: set, batches: int, n: int) ->
         rep.sync_selection(kept)
         history.seen += [item["id"] for item in shown]
         history.accepted += [item["id"] for item in hits]
-        history.rejected += [item["id"] for item in shown if item["id"] not in relevant]
+        misses = [item["id"] for item in shown if item["id"] not in relevant]
+        history.rejected += rng.sample(misses, round(neg_rate * len(misses)))
         vecs = [v for v in (rep.vector(item["id"], strategy.view) for item in shown) if v is not None]
         if len(vecs) >= 2:
             mat = np.stack(vecs)
@@ -258,7 +267,7 @@ def _simulate(strategy, rep, pool: list, relevant: set, batches: int, n: int) ->
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python -m modules.selection.relevance_feedback <pool.json | export.json | runs.log>"
-              " [--target <concept URI>] [--batches 8] [--n 10] [--runs 5]")
+              " [--target <concept URI>] [--batches 8] [--n 10] [--runs 5] [--neg-rate 0.3]")
         sys.exit(1)
 
     from collections import Counter
@@ -274,6 +283,7 @@ if __name__ == "__main__":
 
     pool = _load_pool(sys.argv[1])
     batches, n, runs = int(_arg("--batches", 8)), int(_arg("--n", 10)), int(_arg("--runs", 5))
+    neg_rate = float(_arg("--neg-rate", 0.3))
     counts = Counter(uri for item in pool for uri in _concepts(item))
     target = _arg("--target", None)
     if target is None:
@@ -299,7 +309,8 @@ if __name__ == "__main__":
     }
     logging.getLogger(__name__).setLevel(logging.ERROR)   # the random baseline's warning
     for name, make in strategies.items():
-        results = np.array([_simulate(make(seed), rep, pool, relevant, batches, n) for seed in range(runs)])
+        results = np.array([_simulate(make(seed), rep, pool, relevant, batches, n,
+                                      neg_rate, random.Random(seed)) for seed in range(runs)])
         mean = np.nanmean(results, axis=0)
         print(f"\n── {name} (mean of {runs} runs) ──")
         print("batch  accept  recall  diversity")

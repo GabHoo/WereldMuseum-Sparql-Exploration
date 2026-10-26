@@ -111,3 +111,97 @@ Write the score to `item["score"]`, as the interface intends. The browser sends 
 
 ## Deferred
 - **Query text as the Rocchio anchor `q0`.** This would make the first batch non-random. It needs a text-only query embedding, and the encoder is built for objects, so it waits until it can be done together with the embeddings owner. Until then, the first batch is random.
+
+## Addendum: explicit negatives
+
+### Context
+Today the browser builds `history.rejected` implicitly. Two things put an item there:
+- it was in a batch at the frontier and wasn't kept when the curator pressed Next ([templates/index.html:1123](templates/index.html#L1123)), or
+- it was kept and then removed from the selection (`removeItem`, [templates/index.html:975](templates/index.html#L975)).
+
+Both are weak, ambiguous signals. "Not kept" can mean "fine, but not here", and un-keeping can just be tidying up. This addendum replaces them with **explicit negatives**: the curator marks an item "not relevant" and can see and edit that list. This supersedes Decision 2 above ("not kept" as an implicit negative, no "not relevant" button).
+
+### Behaviour
+- **Marking a negative.** A pool card shows a small × in its top-right corner on mouse-over. It reuses the `.sel-remove` look from the selection cards.
+  - Clicking it marks the item negative: a red outline, and the image dimmed. The × then stays visible.
+  - Clicking × again un-marks the item.
+  - Cards that are kept show no ×.
+  - Pressing **Keep** on a negative card moves it from the negatives to the selection. Keep and negative never overlap.
+- **Nothing implicit.** Pressing Next no longer rejects the items that weren't kept, and removing an item from the selection doesn't make it a negative.
+- **Persistence.** Negatives persist across searches, like the selection. They are a page-level list of items and are not reset in `doSearch`.
+  - On the server they follow `RERANK_CROSS_QUERY`, as positives do. With `true` all of them count. With `false` only the negatives in the current pool count.
+- **Tabs in the selection panel.** The panel gets two tabs, **Selection (n)** and **Negatives (n)**.
+  - The Selection tab is today's grid.
+  - The Negatives tab shows the same small cards, and the × on each removes that item from the negatives. If the item's card is in the batch on screen, the card is updated too.
+  - Export and Build Exhibition stay below both tabs and act on the selection only.
+- **Timing.** A change to the negatives takes effect on the next **Next**. Marking an item doesn't re-rank anything immediately.
+- **Not shown again.** The relevance-feedback strategy leaves negatives out of the candidates. A negative from an earlier search therefore won't come back in a later one. `RandomStrategy` is unchanged.
+
+### Feedback model (revised)
+- **P** is unchanged: `history.accepted` ∪ the selection bank.
+- **N** = `history.rejected` − P. `history.rejected` now carries the explicit negatives only.
+  - With `RERANK_CROSS_QUERY=false`, N is limited to ids in the pool.
+- **C** = pool − `history.seen` − N.
+- **Weight.** The default `RERANK_GAMMA` goes from 0.25 to **0.5**. An explicit negative is a stronger signal than "not kept", but it still weighs less than a positive (β=1.0), so one negative doesn't outweigh the positives.
+- **Earlier searches.** A negative from an earlier search usually has no entry in the current search bank. `rep.vector()` already falls back to the encoder cache ([memory_bank.py:221](modules/representation/memory_bank.py#L221)), so such negatives still count while they are cached. A negative that has been evicted from the cache is ignored, as items without vectors already are.
+
+`SelectionHistory` and the `select(pool, n, history)` interface stay the same. Only the meaning of `rejected` changes.
+
+### Files
+- **[templates/index.html](templates/index.html)**, where nearly all of the change is:
+  - **State.**
+    - Add `let negatives = []`, a list of item objects like `selected`, and an `isNegative(id)` helper.
+    - `serverHistory.rejected` is no longer kept up to date by hand. Each `/next` request instead sends `history: {...serverHistory, rejected: negatives.map(i => i.id)}`. There are two calls: the multi-query first batch in `doSearch` and `nextBatch`.
+  - **`accepted` simplified.**
+    - `keepItem` adds the id to `serverHistory.accepted` (no duplicates) and `removeItem` removes it.
+    - `nextBatch` no longer pushes anything into `accepted` or `rejected`.
+    - Delete the `rejIdx` workaround in `keepItem`; it is no longer needed.
+  - **Pool card.**
+    - `renderPool` adds `<button class="sel-remove neg-btn" title="Not relevant">×</button>` to cards that aren't kept, and the class `negative` when the item is a negative.
+    - New `toggleNegative(item, card)` adds or removes the negative, updates the card, and calls `renderNegatives()`.
+    - `keepItem` drops the item from the negatives first, then removes the card's `.negative` class and its `.neg-btn`.
+    - `removeItem` adds the `.neg-btn` back to the card when it restores it.
+  - **CSS.**
+    - `.artifact-card { position: relative; }`
+    - `.neg-btn { display: none }`, with `.artifact-card:hover .neg-btn` and `.artifact-card.negative .neg-btn` set to `display: block`.
+    - `.artifact-card.negative`: a red box-shadow (the `rgba(160,30,30,…)` already used by `.sel-remove:hover`) and the image at reduced opacity.
+  - **Tabs.**
+    - Replace `.section-meta` in `#selected-section` with a tab bar of two buttons.
+    - Add `#negative-grid` next to `#selected-grid`, with one of the two hidden.
+    - Turn the card-list half of `renderSelected` into `renderCardList(grid, items, onRemove, emptyMsg)` and use it for both grids.
+    - Add `renderNegatives()`. The tab labels carry the counts that `#sel-stat` shows today.
+- **[modules/selection/relevance_feedback.py](modules/selection/relevance_feedback.py)**:
+  - In `_feedback`, with `cross_query` off, filter N to the pool as well (today only the kept ids are filtered).
+  - In `select`, leave N out of the candidates.
+  - Update the module docstring: N is now explicit negatives, and negatives are excluded from candidates.
+  - **CLI simulation.** `_simulate` currently rejects every relevant item that wasn't shown. Add `--neg-rate` (default 0.3): the fraction of the non-relevant items shown in a batch that the simulated curator marks negative. It approximates an explicit curator, who marks only the clear misses.
+- **[modules/base.py](modules/base.py)** and **[modules/selection/_stub.py](modules/selection/_stub.py)**: change the comment and docstring on `rejected` to "item IDs the user explicitly marked not relevant".
+- **[config.py](config.py)**: change the `RERANK_GAMMA` default to `"0.5"`.
+- **[.env.example](.env.example)**: `RERANK_GAMMA=0.5`. Rewrite the comment so it describes explicit negatives, and say that `RERANK_CROSS_QUERY` applies to negatives too.
+- **[tests/test_relevance_feedback.py](tests/test_relevance_feedback.py)**: add tests that
+  - negatives are excluded from the candidates;
+  - with `cross_query=False`, negatives outside the pool are dropped;
+  - an id that is in both `rejected` and P counts as a positive.
+- **[DESIGN.md](DESIGN.md) / [README.md](README.md)**:
+  - Revise the Negatives bullet (DESIGN.md:206) and the `SelectionHistory` row.
+  - Describe the × and the Negatives tab.
+  - Note that `rejected` in `runs.log` means explicit negatives from now on, so older logs are not comparable on that field.
+
+### Steps
+1. Server: `_feedback` and candidate exclusion, then the tests, then `--neg-rate` in the CLI.
+2. Config and `.env.example`: the gamma default and comments.
+3. Frontend: the state and history changes, then the × on pool cards, then the tabs.
+4. Docs, base.py and _stub.py comments.
+
+### Verification
+- `pytest tests/test_relevance_feedback.py`
+- `python -m modules.selection.relevance_feedback <export.json> --target <uri> --neg-rate 0.3` should still beat random on recall.
+- In the app (`SELECTION=relevance_feedback`):
+  - Hovering a pool card shows the ×. Clicking it outlines the card in red and adds the item to the Negatives tab. Clicking it again undoes that.
+  - Keep on a negative card moves it to the Selection tab.
+  - Pressing Next with nothing marked: `runs.log` shows `rejected: []` and `n_neg: 0`.
+  - Mark 3 items negative, then Next: `n_neg: 3`, and those items never come back.
+  - Removing an item from the selection doesn't add it to the negatives.
+  - Removing a negative in the Negatives tab restores the card on screen.
+  - After a new search, the Negatives tab still lists the earlier negatives.
+- With `SELECTION=random`: the × and the tabs work, and selection is random as before.

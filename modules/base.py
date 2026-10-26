@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 @dataclass
 class SelectionHistory:
     accepted: list = field(default_factory=list)  # item IDs user said yes to
-    rejected: list = field(default_factory=list)  # item IDs user said no to
+    rejected: list = field(default_factory=list)  # item IDs user explicitly marked not relevant
     seen: list = field(default_factory=list)       # all shown item IDs (accepted + rejected)
 
     @classmethod

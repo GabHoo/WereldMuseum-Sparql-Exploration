@@ -97,7 +97,7 @@ def rerank_kwargs() -> dict:
         "view":        os.getenv("RERANK_VIEW", "fused").strip() or "fused",
         "scoring":     os.getenv("RERANK_SCORING", "rocchio").strip() or "rocchio",
         "beta":        float(os.getenv("RERANK_BETA", "1.0")),
-        "gamma":       float(os.getenv("RERANK_GAMMA", "0.25")),
+        "gamma":       float(os.getenv("RERANK_GAMMA", "0.5")),
         "k":           int(os.getenv("RERANK_K", "3")),
         "mmr_lambda":  float(os.getenv("RERANK_MMR_LAMBDA", "0.7")),
         "explore":     float(os.getenv("RERANK_EXPLORE", "0.2")),

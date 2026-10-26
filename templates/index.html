@@ -338,6 +338,7 @@
     }
 
     .artifact-card {
+      position: relative;
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       display: flex;
@@ -349,6 +350,15 @@
     .artifact-card:hover { box-shadow: 0 0 0 1px var(--accent); }
 
     .artifact-card.kept { box-shadow: 0 0 0 2px #3d6b3d; }
+
+    /* Negative: the × marks a card not relevant (shown on hover, or once marked). */
+    .neg-btn { display: none; }
+    .artifact-card:not(.kept):hover .neg-btn,
+    .artifact-card.negative .neg-btn { display: block; }
+    .artifact-card.negative { box-shadow: 0 0 0 2px rgba(160,30,30,0.85); }
+    .artifact-card.negative .neg-btn { background: rgba(160,30,30,0.85); }
+    .artifact-card.negative .card-img,
+    .artifact-card.negative .card-no-img { opacity: 0.35; }
 
     .card-img {
       width: 100%;
@@ -480,18 +490,29 @@
       padding: 20px 20px 16px;
     }
 
-    #selected-section .section-label { color: var(--accent); }
-    #selected-section .section-stat  { color: var(--text-muted); }
+    #selected-section .section-meta { margin-bottom: 0; }
+
+    .sel-tab {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 0 0 3px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .sel-tab:hover  { color: var(--accent); }
+    .sel-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
     .empty-msg { color: #8a8070; }
 
-    #selected-grid {
+    #selected-grid, #negative-grid {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
       min-height: 70px;
       padding: 12px 0 8px;
     }
+    #selected-grid[hidden], #negative-grid[hidden] { display: none; }
 
     .sel-card {
       position: relative;
@@ -636,11 +657,14 @@
 
   <div id="selected-section">
     <div class="section-meta">
-      <span class="section-label">Selection</span>
-      <span class="section-stat" id="sel-stat">0 items</span>
+      <button class="sel-tab section-label active" data-tab="selected-grid">Selection (<span id="sel-stat">0</span>)</button>
+      <button class="sel-tab section-label" data-tab="negative-grid">Negatives (<span id="neg-stat">0</span>)</button>
     </div>
     <div id="selected-grid">
       <span class="empty-msg">No items selected yet.</span>
+    </div>
+    <div id="negative-grid" hidden>
+      <span class="empty-msg">No negatives yet. Mark a pool item with its × to add it.</span>
     </div>
     <div class="action-row">
       <button id="export-btn" disabled>Export →</button>
@@ -658,10 +682,11 @@
   /* ── State ──────────────────────────────────────────────────────────── */
   let pool           = [];   // full result pool for current search
   let selected       = [];   // accumulated yes-picks — persists across searches
+  let negatives      = [];   // items marked not relevant (the × on a card) — persists across searches
   let currentMetrics = null; // last metrics response from /search
   let currentConcepts = [];  // concepts from /search: [{label, uri, feature}]
   let meta     = { query: '', sparql: '' };
-  let serverHistory = { accepted: [], rejected: [], seen: [] };
+  let serverHistory = { accepted: [], seen: [] };   // rejected: see historyForServer()
 
   // Batch navigation: each entry is {displayed: [...], choices: {id: 'yes'|'no'}}
   // batchIdx points at what's currently shown; only atFrontier() triggers server calls.
@@ -671,6 +696,9 @@
   function atFrontier() { return batches.length > 0 && batchIdx === batches.length - 1; }
   function curBatch()   { return batches[batchIdx] || { displayed: [] }; }
   function isKept(id)   { return selected.some(s => s.id === id); }
+  function isNegative(id) { return negatives.some(s => s.id === id); }
+  // The history sent to /next: rejected is exactly the explicit negatives.
+  function historyForServer() { return { ...serverHistory, rejected: negatives.map(i => i.id) }; }
 
   /* ── DOM ────────────────────────────────────────────────────────────── */
   const poolSection = document.getElementById('pool-section');
@@ -682,6 +710,8 @@
   const statusMsg   = document.getElementById('status-msg');
   const selGrid     = document.getElementById('selected-grid');
   const selStat     = document.getElementById('sel-stat');
+  const negGrid     = document.getElementById('negative-grid');
+  const negStat     = document.getElementById('neg-stat');
   const exportBtn      = document.getElementById('export-btn');
   const exhibitionBtn  = document.getElementById('exhibition-btn');
   const poolMetrics    = document.getElementById('pool-metrics');
@@ -794,9 +824,11 @@
 
     poolGrid.innerHTML = displayed.map(item => {
       const kept  = isKept(item.id);
+      const neg   = isNegative(item.id);
       const img   = imgTag(item, 'card-img', 'card-no-img', 'no image');
       return `
-        <div class="artifact-card${kept ? ' kept' : ''}" data-id="${esc(item.id)}">
+        <div class="artifact-card${kept ? ' kept' : ''}${neg ? ' negative' : ''}" data-id="${esc(item.id)}">
+          <button class="sel-remove neg-btn" title="Not relevant">×</button>
           ${img}
           <div class="card-body">
             <div class="card-title">${esc(item.title)}</div>
@@ -809,40 +841,70 @@
     }).join('');
 
     poolGrid.querySelectorAll('.artifact-card').forEach(card => {
-      const id   = card.dataset.id;
-      const item = displayed.find(i => i.id === id);
-      const btn  = card.querySelector('.keep-btn');
-      if (btn && item && !isKept(id)) {
-        btn.addEventListener('click', () => keepItem(item, btn, card));
-      }
+      const item = displayed.find(i => i.id === card.dataset.id);
+      if (!item) return;
+      card.querySelector('.keep-btn').addEventListener('click', () => keepItem(item));
+      card.querySelector('.neg-btn').addEventListener('click', () => toggleNegative(item));
     });
 
     poolStat.textContent = `${pool.length} object${pool.length !== 1 ? 's' : ''}`;
     updateNav();
   }
 
-  /* ── Render selected ────────────────────────────────────────────────── */
-  function renderSelected() {
-    selStat.textContent = `${selected.length} item${selected.length !== 1 ? 's' : ''}`;
-    if (!selected.length) {
-      selGrid.innerHTML = '<span class="empty-msg">No items selected yet.</span>';
-    } else {
-      selGrid.innerHTML = selected.map(item => {
-        const img   = imgTag(item, '', 'sel-card-no-img');
-        return `
-          <div class="sel-card">
-            <button class="sel-remove" data-id="${esc(item.id)}" title="Remove">×</button>
-            ${img}
-            <div class="sel-card-title">${esc(item.title)}</div>
-          </div>`;
-      }).join('');
-      selGrid.querySelectorAll('.sel-remove').forEach(btn => {
-        btn.addEventListener('click', () => removeItem(btn.dataset.id));
-      });
+  // Bring a pool card on screen (if any) in line with the kept / negative state.
+  function refreshCard(itemId) {
+    const card = poolGrid.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
+    if (!card) return;
+    const kept = isKept(itemId);
+    card.classList.toggle('kept', kept);
+    card.classList.toggle('negative', isNegative(itemId));
+    const btn = card.querySelector('.keep-btn');
+    btn.disabled    = kept;
+    btn.textContent = kept ? '✓ Kept' : 'Keep';
+  }
+
+  /* ── Render selected / negatives ────────────────────────────────────── */
+  function renderCardList(grid, items, onRemove, emptyMsg) {
+    if (!items.length) {
+      grid.innerHTML = `<span class="empty-msg">${esc(emptyMsg)}</span>`;
+      return;
     }
+    grid.innerHTML = items.map(item => {
+      const img   = imgTag(item, '', 'sel-card-no-img');
+      return `
+        <div class="sel-card">
+          <button class="sel-remove" data-id="${esc(item.id)}" title="Remove">×</button>
+          ${img}
+          <div class="sel-card-title">${esc(item.title)}</div>
+        </div>`;
+    }).join('');
+    grid.querySelectorAll('.sel-remove').forEach(btn => {
+      btn.addEventListener('click', () => onRemove(btn.dataset.id));
+    });
+  }
+
+  function renderSelected() {
+    selStat.textContent = selected.length;
+    renderCardList(selGrid, selected, removeItem, 'No items selected yet.');
     exportBtn.disabled     = selected.length === 0;
     exhibitionBtn.disabled = selected.length === 0;
   }
+
+  function renderNegatives() {
+    negStat.textContent = negatives.length;
+    renderCardList(negGrid, negatives, removeNegative,
+      'No negatives yet. Mark a pool item with its × to add it.');
+  }
+
+  // Tabs: Selection | Negatives
+  document.querySelectorAll('.sel-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.sel-tab').forEach(t => {
+        t.classList.toggle('active', t === tab);
+        document.getElementById(t.dataset.tab).hidden = t !== tab;
+      });
+    });
+  });
 
   /* ── Pool metrics ───────────────────────────────────────────────────── */
   function renderMetrics(metrics) {
@@ -950,43 +1012,48 @@
   }
 
   /* ── Keep ───────────────────────────────────────────────────────────── */
-  function keepItem(item, btn, card) {
+  function keepItem(item) {
+    if (isKept(item.id)) return;
     selected.push(item);
-    // Kept after going back to an earlier batch: no longer a rejection.
-    const rejIdx = serverHistory.rejected.indexOf(item.id);
-    if (rejIdx !== -1) {
-      serverHistory.rejected.splice(rejIdx, 1);
-      serverHistory.accepted.push(item.id);
-    }
-    card.classList.add('kept');
-    btn.disabled    = true;
-    btn.textContent = '✓ Kept';
+    if (!serverHistory.accepted.includes(item.id)) serverHistory.accepted.push(item.id);
+    // Keep and negative never overlap: keeping a negative moves it over.
+    const negIdx = negatives.findIndex(s => s.id === item.id);
+    if (negIdx !== -1) { negatives.splice(negIdx, 1); renderNegatives(); }
+    refreshCard(item.id);
     renderSelected();
     syncSelection();
   }
 
   /* ── Remove from selected ───────────────────────────────────────────── */
+  // Un-keeping is not a negative: the item just goes back to neutral.
   function removeItem(itemId) {
     const idx = selected.findIndex(s => s.id === itemId);
     if (idx === -1) return;
     selected.splice(idx, 1);
     const accIdx = serverHistory.accepted.indexOf(itemId);
     if (accIdx !== -1) serverHistory.accepted.splice(accIdx, 1);
-    serverHistory.rejected.push(itemId);
     syncSelection();
-    // Restore card in pool if currently visible
-    const card = poolGrid.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
-    if (card) {
-      card.classList.remove('kept');
-      const btn  = card.querySelector('.keep-btn');
-      const item = curBatch().displayed.find(i => i.id === itemId);
-      if (btn && item) {
-        btn.disabled    = false;
-        btn.textContent = 'Keep';
-        btn.addEventListener('click', () => keepItem(item, btn, card));
-      }
-    }
+    refreshCard(itemId);
     renderSelected();
+  }
+
+  /* ── Negatives ──────────────────────────────────────────────────────── */
+  // The × on a pool card marks the item not relevant, or un-marks it. Takes
+  // effect on the next batch: /next receives the negatives as history.rejected.
+  function toggleNegative(item) {
+    if (isKept(item.id)) return;
+    if (isNegative(item.id)) return removeNegative(item.id);
+    negatives.push(item);
+    refreshCard(item.id);
+    renderNegatives();
+  }
+
+  function removeNegative(itemId) {
+    const idx = negatives.findIndex(s => s.id === itemId);
+    if (idx === -1) return;
+    negatives.splice(idx, 1);
+    refreshCard(itemId);
+    renderNegatives();
   }
 
   /* ── Concept tags ───────────────────────────────────────────────────── */
@@ -1034,7 +1101,7 @@
     // Reset navigation; selected persists intentionally
     batches       = [];
     batchIdx      = -1;
-    serverHistory = { accepted: [], rejected: [], seen: [] };
+    serverHistory = { accepted: [], seen: [] };   // rejected: see historyForServer()
     // One id per search: parallel category requests fill one search bank.
     const searchId = Date.now() + '-' + Math.random().toString(36).slice(2);
 
@@ -1070,7 +1137,7 @@
         const nr = await fetch('/next', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pool: firstPool, n: N, history: serverHistory }),
+          body: JSON.stringify({ pool: firstPool, n: N, history: historyForServer() }),
         });
         const nd = await nr.json();
         if (!nr.ok) throw new Error(nd.error || 'Failed to get first batch');
@@ -1116,12 +1183,7 @@
       return;
     }
 
-    // At frontier: items not kept → rejected; fetch new batch
-    const { displayed } = curBatch();
-    const keptIds = new Set(selected.map(i => i.id));
-    serverHistory.accepted.push(...displayed.filter(i =>  keptIds.has(i.id)).map(i => i.id));
-    serverHistory.rejected.push(...displayed.filter(i => !keptIds.has(i.id)).map(i => i.id));
-
+    // At frontier: fetch a new batch, re-ranked on the kept items and negatives
     nextBtn.disabled = true;
     statusMsg.textContent = 'Loading…';
 
@@ -1129,7 +1191,7 @@
       const r = await fetch('/next', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pool, n: N, history: serverHistory }),
+        body: JSON.stringify({ pool, n: N, history: historyForServer() }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed');

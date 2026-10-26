@@ -18,7 +18,7 @@ class MySelectionStrategy(SelectionStrategy):
         n       : number of items to return
         history : SelectionHistory with:
                     accepted   list of item IDs the user said yes to
-                    rejected   list of item IDs the user said no to
+                    rejected   list of item IDs the user explicitly marked not relevant
                     seen       list of all item IDs ever shown (never return these)
 
         Return n items from pool whose id is NOT in history.seen.

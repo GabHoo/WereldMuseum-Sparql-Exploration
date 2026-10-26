@@ -76,7 +76,7 @@ Expected columns: `concept, prefLabel, broad, altLabels` (altLabels pipe-separat
 
 ### Selection
 
-`SELECTION=relevance_feedback` (needs `REPRESENTATION`) re-ranks each new batch from the curator's feedback: kept objects pull similar ones up, shown-but-not-kept ones push them down a little, and 2 of 10 objects are still picked at random. Settings are the `RERANK_*` variables in `.env.example`. Compare it with random selection offline with `python -m modules.selection.relevance_feedback <pool or runs.log> --target <concept URI>`. See DESIGN.md §4.
+`SELECTION=relevance_feedback` (needs `REPRESENTATION`) re-ranks each new batch from the curator's feedback: kept objects pull similar ones up, objects marked not relevant (the × that appears on a pool card under the mouse; listed under the selection panel's Negatives tab) push them down and are not shown again, and 2 of 10 objects are still picked at random. Settings are the `RERANK_*` variables in `.env.example`. Compare it with random selection offline with `python -m modules.selection.relevance_feedback <pool or runs.log> --target <concept URI>`. See DESIGN.md §4.
 
 ---
 

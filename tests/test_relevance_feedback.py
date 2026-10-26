@@ -140,6 +140,39 @@ def test_cross_query_off_ignores_kept_outside_pool():
     assert strategy.last_debug["mode"] == "random"
 
 
+def test_negatives_are_never_shown():
+    vecs = _clusters({"a": 10, "b": 10})
+    rep = FakeRepresentation(vecs)
+    # b1..b3 were marked not relevant under an earlier query, so never seen here
+    history = SelectionHistory(accepted=["a0"], rejected=["b1", "b2", "b3"], seen=["a0"])
+    batch = _strategy(rep, explore=1.0).select(_pool(vecs), 19, history)
+    assert not {"b1", "b2", "b3"} & {item["id"] for item in batch}
+    assert len(batch) == 16
+
+
+def test_cross_query_off_ignores_negatives_outside_pool():
+    vecs = _clusters({"a": 10, "b": 10})
+    rep = FakeRepresentation(vecs)
+    pool = [p for p in _pool(vecs) if p["id"] != "b0"]   # b0 came from an earlier query
+    history = SelectionHistory(rejected=["b0"])
+    on = _strategy(rep)
+    on.select(pool, 5, history)
+    assert on.last_debug["n_neg"] == 1
+    off = _strategy(rep, cross_query=False)
+    off.select(pool, 5, history)
+    assert off.last_debug["mode"] == "random"
+
+
+def test_positive_wins_over_negative():
+    vecs = _clusters({"a": 10, "b": 10})
+    rep = FakeRepresentation(vecs)
+    rep.keep(["a0"])
+    strategy = _strategy(rep)
+    strategy.select(_pool(vecs), 5, SelectionHistory(rejected=["a0", "b0"], seen=["a0"]))
+    assert strategy.last_debug["n_pos"] == 1
+    assert strategy.last_debug["n_neg"] == 1
+
+
 def test_unencoded_candidates_are_explored():
     vecs = _clusters({"a": 10})
     vecs.update({f"x{i}": None for i in range(10)})   # still queued for encoding
