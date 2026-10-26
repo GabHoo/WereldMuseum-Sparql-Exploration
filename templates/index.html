@@ -677,7 +677,7 @@
     {% endfor %}
     <button id="cat-search-btn" disabled>Search</button>
   {% else %}
-    <label>Search</label>
+    <label>Search by keyword</label>
     <form id="kw-form">
       <div id="keyword-wrap">
         <input id="keyword-input" type="text" placeholder="e.g. funeral masks, West Africa…" autocomplete="off">
@@ -765,6 +765,7 @@
   let currentConcepts = [];  // concepts from /search: [{label, uri, feature}]
   let meta     = { query: '', sparql: '', exhibition_theme: '' };
   let serverHistory = { accepted: [], rejected: [], seen: [] };
+  let selectedCats  = new Set();  // category_select mode: active category buttons
 
   // Batch navigation: each entry is {displayed: [...], choices: {id: 'yes'|'no'}}
   // batchIdx points at what's currently shown; only atFrontier() triggers server calls.
@@ -794,6 +795,7 @@
   const featureStats    = document.getElementById('feature-stats');
   const errArea     = document.getElementById('err-area');
   const themeInput  = document.getElementById('theme-input');
+  const keywordInput = document.getElementById('keyword-input');  // null in category_select mode
 
   /* ── Helpers ────────────────────────────────────────────────────────── */
   // Curator's framing of the exhibition, e.g. "items significant to nomadic life"
@@ -1335,11 +1337,13 @@
   }
 
   /* ── Build exhibition ───────────────────────────────────────────────── */
-  // A regular form post (not fetch) so the exhibition page opens in a new tab
-  // and this page keeps its state.
+  // A regular form post (not fetch): the exhibition page replaces this one.
+  // Its "Back to selection" button returns here, and restoreSession() brings
+  // back the search and selection.
   function buildExhibition() {
     meta.exhibition_theme = exhibitionTheme();
-    const form  =Object.assign(document.createElement('form'), { method: 'POST', action: '/exhibition', target: '_blank' });
+    saveSession();
+    const form  = Object.assign(document.createElement('form'), { method: 'POST', action: '/exhibition' });
     const input = Object.assign(document.createElement('input'), { type: 'hidden', name: 'export' });
     input.value = JSON.stringify({ items: selected, meta });
     form.appendChild(input);
@@ -1348,7 +1352,63 @@
     form.remove();
   }
 
+  /* ── Session state ──────────────────────────────────────────────────── */
+  // The page state lives in sessionStorage (this tab only, gone when the tab
+  // closes), so going to the exhibition canvas and back, or reloading, returns
+  // to the same search, batch, selection, theme and chat.
+  const SESSION_KEY = 'curation-state';
+
+  function saveSession() {
+    const chat = chatWindow
+      ? [...chatWindow.children].slice(1)   // skip the greeting, it is in the template
+          .map(m => ({ role: m.classList.contains('user') ? 'user' : 'assistant', text: m.textContent }))
+      : [];
+    const state = {
+      pool, selected, currentMetrics, currentConcepts, meta, serverHistory, batches, batchIdx,
+      keyword: keywordInput ? keywordInput.value : '',
+      theme: themeInput.value,
+      cats: [...selectedCats],
+      chat,
+    };
+    try {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+    } catch (_) { /* storage full or blocked: the page works, it just won't be restored */ }
+  }
+
+  function restoreSession() {
+    let state = null;
+    try { state = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch (_) {}
+    if (!state) return;
+
+    pool            = state.pool || [];
+    selected        = state.selected || [];
+    currentMetrics  = state.currentMetrics || null;
+    currentConcepts = state.currentConcepts || [];
+    meta            = state.meta || meta;
+    serverHistory   = state.serverHistory || serverHistory;
+    batches         = state.batches || [];
+    batchIdx        = state.batchIdx ?? -1;
+    if (keywordInput) keywordInput.value = state.keyword || '';
+    themeInput.value = state.theme || '';
+    selectedCats = new Set(state.cats || []);
+    document.querySelectorAll('.cat-btn').forEach(b => b.classList.toggle('active', selectedCats.has(b.dataset.cat)));
+    const catSearchBtn = document.getElementById('cat-search-btn');
+    if (catSearchBtn) catSearchBtn.disabled = selectedCats.size === 0;
+    if (chatWindow) for (const m of state.chat || []) addChatMsg(m.role, m.text);
+
+    renderConcepts(currentConcepts);
+    renderSelected();
+    if (batches.length) {
+      poolSection.hidden = false;
+      renderPool();
+      renderMetrics(currentMetrics);
+      renderFeatureStats(pool, currentConcepts);
+      layoutGrid();
+    }
+  }
+
   /* ── Wire up ────────────────────────────────────────────────────────── */
+  window.addEventListener('pagehide', saveSession);
   prevBtn.addEventListener('click', prevBatch);
   nextBtn.addEventListener('click', nextBatch);
   exportBtn.addEventListener('click', doExport);
@@ -1356,7 +1416,6 @@
   if (chatForm) chatForm.addEventListener('submit', sendChat);
 
   if (MODE === 'category_select') {
-    let selectedCats = new Set();
     const catSearchBtn = document.getElementById('cat-search-btn');
 
     document.querySelectorAll('.cat-btn').forEach(btn => {
@@ -1379,10 +1438,12 @@
   } else {
     document.getElementById('kw-form').addEventListener('submit', e => {
       e.preventDefault();
-      const q = document.getElementById('keyword-input').value.trim();
+      const q = keywordInput.value.trim();
       if (q) doSearch([q]);
     });
   }
+
+  restoreSession();
 </script>
 
 <style>

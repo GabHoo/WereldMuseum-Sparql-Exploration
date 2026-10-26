@@ -193,8 +193,8 @@ def chat():
 def exhibition():
     """
     Build Exhibition: the curation page posts the selection as a form field
-    `export` = JSON { items, meta } (a form post, so the exhibition opens in a
-    new tab). Returns the page produced by the configured ExhibitionBuilder.
+    `export` = JSON { items, meta }. Returns the page produced by the
+    configured ExhibitionBuilder.
     """
     try:
         data = json.loads(request.form.get("export", "{}"))

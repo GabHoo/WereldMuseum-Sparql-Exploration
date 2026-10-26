@@ -183,6 +183,7 @@ function saveState() {
   if (isRestoring) return;
   history.push(JSON.stringify(canvas.toJSON()));
   if (history.length > HISTORY_MAX) history.shift();
+  persistWall(history[history.length - 1]);
 }
 
 canvas.on('object:added', (e) => {
@@ -207,6 +208,7 @@ function undo() {
     canvas.renderAll();
     isRestoring = false;
   });
+  persistWall(prev);
 }
 
 function clearCanvas() {
@@ -393,7 +395,35 @@ document.getElementById('album-next').addEventListener('click', () => {
   renderAlbum();
 });
 
+/* ---------- Keep the wall across visits ----------
+   The wall is saved in sessionStorage (this tab only, gone when the tab
+   closes), so going back to the curation page to add objects and returning
+   doesn't lose the composition. */
+const WALL_KEY = 'digital-wall';
+
+function persistWall(json) {
+  try {
+    sessionStorage.setItem(WALL_KEY, json);
+  } catch (_) { /* storage full (e.g. large uploaded images) or blocked: keep working without */ }
+}
+
+function restoreWall() {
+  let saved = null;
+  try { saved = sessionStorage.getItem(WALL_KEY); } catch (_) {}
+  if (!saved) {
+    saveState();          // baseline empty-canvas state for undo
+    return;
+  }
+  isRestoring = true;
+  canvas.loadFromJSON(saved, () => {
+    canvas.backgroundColor = WALL_COLOR;
+    canvas.renderAll();
+    isRestoring = false;
+    saveState();          // the restored wall is the undo baseline
+  });
+}
+
 /* ---------- Boot ---------- */
 setTool('select');
-saveState();            // baseline empty-canvas state for undo
+restoreWall();
 renderGallery(normalize(EXPORT_DATA));

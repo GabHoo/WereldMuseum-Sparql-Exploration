@@ -30,7 +30,7 @@ User types NL query (or clicks a category), optionally an exhibition theme
                      ├─ "Next batch" ──▶ SelectionStrategy picks next N (seen items never return)
                      │
                      └─ enough Yes ─┬─▶ [Exporter] ──▶ JSON download
-                                    ├─▶ [ExhibitionBuilder] ──▶ exhibition page (new tab)
+                                    ├─▶ [ExhibitionBuilder] ──▶ exhibition page (← back to selection)
                                     └─▶ [CurationAssistant → ChatModel] ──▶ chat about the selection
 ```
 
@@ -379,7 +379,7 @@ Each record automatically gets a `timestamp` field (UTC ISO-8601).
 
 ### 8. ExhibitionBuilder
 
-Turns the selection into an exhibition. *Build Exhibition* posts `{ items, meta }` as a form to `POST /exhibition` (opens in a new tab, so the curation page keeps its state); the route shapes it like the export file and returns the builder's page.
+Turns the selection into an exhibition. *Build Exhibition* posts `{ items, meta }` as a form to `POST /exhibition`, which replaces the curation page in the same tab; the route shapes it like the export file and returns the builder's page. The curation page saves its state to `sessionStorage` when you leave it (see *Curation UI*), so the exhibition page's *← Back to selection* link (`/`) returns to the same search and selection, and a second *Build Exhibition* sends the updated selection.
 
 ```python
 class ExhibitionBuilder(ABC):
@@ -391,7 +391,7 @@ class ExhibitionBuilder(ABC):
 
 | Name | Key | How it works |
 |------|-----|--------------|
-| `DigitalWall` | `digital_wall` | `templates/digital_wall.html` + `static/digital_wall/` (Fabric.js): the selection appears as thumbnails (via `/thumb`, so the canvas stays exportable) to drag onto a gallery wall, with pen, eraser, text, undo and props (pillar, frame). *Done* sends the flattened scene, a description and a variation count (1–5) to `/exhibition/render`, one call per variation: variation 0 renders the arrangement faithfully, 1–4 reimagine it in fixed gallery styles. Uses the OpenAI image-edit API via the `openai` client (`OPENAI_API_KEY`, `DIGITAL_WALL_IMAGE_MODEL` default `gpt-image-2`, `DIGITAL_WALL_IMAGE_SIZE` default `1024x1024`); without a key the editor works and Generate shows the error. |
+| `DigitalWall` | `digital_wall` | `templates/digital_wall.html` + `static/digital_wall/` (Fabric.js): the selection appears as thumbnails (via `/thumb`, so the canvas stays exportable) to drag onto a gallery wall, with pen, eraser, text, undo and props (pillar, frame). Every change is saved to `sessionStorage` (`digital-wall`), so the wall survives a trip back to the selection; *← Back to selection* links to `/`. *Done* sends the flattened scene, a description and a variation count (1–5) to `/exhibition/render`, one call per variation: variation 0 renders the arrangement faithfully, 1–4 reimagine it in fixed gallery styles. Uses the OpenAI image-edit API via the `openai` client (`OPENAI_API_KEY`, `DIGITAL_WALL_IMAGE_MODEL` default `gpt-image-2`, `DIGITAL_WALL_IMAGE_SIZE` default `1024x1024`); without a key the editor works and Generate shows the error. |
 
 ---
 
@@ -565,7 +565,7 @@ Pool items wrap an artifact for the UI and the selection loop:
 
 ## Curation UI (`templates/index.html`)
 
-A single page; all state (pool, history, selection) lives in the browser.
+A single page; all state (pool, history, selection) lives in the browser. On leaving the page (`pagehide`: going to the exhibition page, reloading) it is saved to `sessionStorage` under `curation-state`, together with the keyword, theme, active categories and chat messages, and restored on the next load in the same tab. Closing the tab clears it.
 
 ```
 ┌ Search ─ keyword box (concept_query) or category buttons (category_select) ┐

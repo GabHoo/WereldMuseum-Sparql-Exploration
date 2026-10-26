@@ -49,6 +49,7 @@ html, body {
   cursor: pointer;
 }
 .tool:hover { border-color: #3c4456; }
+#btn-back { text-decoration: none; white-space: nowrap; }
 .tool.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .divider { width: 1px; height: 26px; background: #3c4456; }

@@ -86,7 +86,7 @@ The curation assistant (chat box under the selection) answers questions about th
 
 ### Exhibition builder
 
-*Build Exhibition* opens the selection in a new tab, in the page of the configured builder.
+*Build Exhibition* opens the selection in the page of the configured builder. *← Back to selection* returns to the curation page with the search, batch, selection, theme and chat as you left them, so you can add objects and build again; the wall keeps its composition too. Both are kept in the browser tab's `sessionStorage`, so they last until the tab is closed.
 
 | Key | How it works |
 |-----|-------------|
