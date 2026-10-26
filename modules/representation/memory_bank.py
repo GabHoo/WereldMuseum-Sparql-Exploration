@@ -15,6 +15,8 @@ re-ranking SelectionStrategy) talks to:
     prioritize(ids)              encode these search-bank items (the displayed
                                  batch) before the rest of the pool.
     sync_selection(items)        mirror the browser's full "selected" list.
+    preload(items)               encode items into the vector cache only (no
+                                 bank), after all other work (demo warm-up).
     search_bank / selection_bank MemoryBank: matrix(view), centroid(view), get(id), …
     vector(id, view)             one item's vector (from a bank or the cache)
     similarity(view, ids, bank)  cosine similarity of items to a bank
@@ -45,6 +47,7 @@ log = logging.getLogger(__name__)
 _PRIORITY_SELECTION = 0
 _PRIORITY_DISPLAYED = 1   # the batch on screen: feedback needs it encoded first
 _PRIORITY_SEARCH = 2
+_PRIORITY_PRELOAD = 3     # cache warm-up: only when nothing else is waiting
 _IMAGE_FETCHERS = 4   # parallel thumbnail downloads per batch, as the browser preload
 
 
@@ -202,6 +205,13 @@ class RepresentationService:
         self._enqueue(_PRIORITY_SELECTION, session, "selection", None, s.selection_bank.pending())
         return self.status(session)
 
+    def preload(self, items: list, session: str = "default") -> int:
+        """Queue items for encoding into the cache only; returns how many were queued."""
+        with self._cache_lock:
+            todo = [item for item in items if item["id"] not in self._cache]
+        self._enqueue(_PRIORITY_PRELOAD, session, "cache", None, todo)
+        return len(todo)
+
     # ── Consumer helpers ──────────────────────────────────────────────────────
 
     def similarity(self, view: str, ids: list, bank: MemoryBank) -> np.ndarray:
@@ -241,6 +251,7 @@ class RepresentationService:
             "views": list(self.encoder.views),
             "search": s.search_bank.status(),
             "selection": s.selection_bank.status(),
+            "cached": len(self._cache),
         }
 
     # ── Worker ────────────────────────────────────────────────────────────────
@@ -270,9 +281,10 @@ class RepresentationService:
             except Exception:
                 log.exception("Representation batch failed (%d items)", len(batch))
                 # Mark as done-without-vectors so status() can reach ready.
-                target = getattr(self.session(session), f"{bank}_bank")
-                for item in batch:
-                    target.set_vectors(item["id"], {})
+                if bank != "cache":
+                    target = getattr(self.session(session), f"{bank}_bank")
+                    for item in batch:
+                        target.set_vectors(item["id"], {})
             finally:
                 with self._idle:
                     self._busy -= 1
@@ -297,7 +309,8 @@ class RepresentationService:
                     found[item["id"]] = self._cache[item["id"]] = vecs
                 while len(self._cache) > self._cache_size:
                     self._cache.popitem(last=False)
-        # Fill both banks: an item kept while still pending gets its vectors too.
+        # Fill both banks: an item kept while still pending gets its vectors too
+        # (also for preloaded items that a search has since added to a bank).
         for item_id, vecs in found.items():
             s.search_bank.set_vectors(item_id, vecs)
             s.selection_bank.set_vectors(item_id, vecs)
