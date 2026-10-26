@@ -214,18 +214,18 @@ class SelectionStrategy(ABC):
 | Name | Key | How it works |
 |------|-----|--------------|
 | `RandomStrategy` | `random` | `random.sample` over unseen items; ignores feedback. |
-| `TitleClusterStrategy` | `title_cluster` | Clusters the pool, shows one item per cluster first, then steers towards the clusters the user keeps from (below). |
+| `MetadataTextualClusteringStrategy` | `metadata_textual_clustering` | Clusters the pool, shows one item per cluster first, then steers towards the clusters the user keeps from (below). |
 
-#### TitleClusterStrategy (`title_cluster`)
+#### MetadataTextualClusteringStrategy (`metadata_textual_clustering`)
 
-*prepare (once per search):* each item's metadata is linearized into one text by `metadata_linearization(TITLE_CLUSTER_FIELDS)` (default `title`), embedded with the shared `TextEmbedder`, and clustered with k-means into `TITLE_CLUSTER_N_CLUSTERS` clusters (default = 2 × batch size, 18, so clusters remain unshown after the first batch). Each item gets `item["selection"] = {"cluster": "<search-id>:<k>", "cluster_label": <most common text in the cluster>}`. The search-id prefix (a hash of the pool's ids) keeps clusters of different searches apart when the browser merges multi-category pools.
+*prepare (once per search):* each item's metadata is linearized into one text by `metadata_linearization(METADATA_TEXTUAL_CLUSTERING_FIELDS)` (default `title`), embedded with the shared `TextEmbedder`, and clustered with k-means into `METADATA_TEXTUAL_CLUSTERING_N_CLUSTERS` clusters (default = 2 × batch size, 18, so clusters remain unshown after the first batch). Each item gets `item["selection"] = {"cluster": "<search-id>:<k>", "cluster_label": <most common text in the cluster>}`. The search-id prefix (a hash of the pool's ids) keeps clusters of different searches apart when the browser merges multi-category pools.
 
 *select (every batch):*
 
 ```
 streak  = batches in a row (most recent first) in which nothing was kept   (from history.seen order)
-r       = min(1, s · streak)          (s = TITLE_CLUSTER_SHUFFLE_STEP, default 0.25)
-steered = round(w · (1 − r) · n)      (w = TITLE_CLUSTER_STEERING_WEIGHT, default 0.6)
+r       = min(1, s · streak)          (s = METADATA_TEXTUAL_CLUSTERING_SHUFFLE_STEP, default 0.25)
+steered = round(w · (1 − r) · n)      (w = METADATA_TEXTUAL_CLUSTERING_STEERING_WEIGHT, default 0.6)
           only once something is kept: shared over the clusters of history.accepted,
           in proportion to how many items were kept from each (largest remainder)
 random  = round(r · remaining) slots: uniform over all unseen items, ignoring clusters
@@ -243,17 +243,17 @@ order:  steered, then exploration, then random
 
 Simulated on the *masker* pool (95 objects, 18 clusters), a curator who never keeps: batch 2 shows 8 never-shown clusters, then `r` = 0.25 → 0.50 → 0.75 → 1.0. Keeping in batch 1, nothing in 2–4, keeping again in 5: steering fades to 0 and returns right after the second keep.
 
-*Trade-off: number of clusters.* More clusters leave unshown clusters to rotate to, but make clusters small: with 18 clusters the *masker* pool's sizes are 17, 15, 13, 9, 8, 5, 4, 3, 3, 3, 3, 3, 2, 2, 2, 1, 1, 1. Keeping an item from a cluster of 3 can steer at most 2 more cards; the remaining steered slots fall back to exploration. `TITLE_CLUSTER_N_CLUSTERS=9` gives bigger clusters (stronger steering) but nothing left unshown after batch 1.
+*Trade-off: number of clusters.* More clusters leave unshown clusters to rotate to, but make clusters small: with 18 clusters the *masker* pool's sizes are 17, 15, 13, 9, 8, 5, 4, 3, 3, 3, 3, 3, 2, 2, 2, 1, 1, 1. Keeping an item from a cluster of 3 can steer at most 2 more cards; the remaining steered slots fall back to exploration. `METADATA_TEXTUAL_CLUSTERING_N_CLUSTERS=9` gives bigger clusters (stronger steering) but nothing left unshown after batch 1.
 
-*Choosing the text (`TITLE_CLUSTER_FIELDS`).* A comma-separated list of Artifact fields; their values are joined with ` · ` (list fields contribute all values joined with `, `, empty fields are skipped). Field names are checked against `Artifact` at startup.
+*Choosing the text (`METADATA_TEXTUAL_CLUSTERING_FIELDS`).* A comma-separated list of Artifact fields; their values are joined with ` · ` (list fields contribute all values joined with `, `, empty fields are skipped). Field names are checked against `Artifact` at startup.
 
-| `TITLE_CLUSTER_FIELDS` | Text for an object |
+| `METADATA_TEXTUAL_CLUSTERING_FIELDS` | Text for an object |
 |------|--------------------|
 | `title` | `HOUTEN VROUWENFIGUUR VERBONDEN MET HET YASSI-GENOOTSCHAP` |
 | `title,type,material,place` | `HOUTEN VROUWENFIGUUR … · beelden · glas (materiaal), hout, tand (dierlijk), katoen · Liberia` |
 | `title,type,material,place` (untitled object) | `kokosnoot · Liberia` |
 
-*Choosing the fields.* Titles are often missing or generic in this collection (51 of 95 *masker* objects have none), which puts half the pool into one "(untitled)" cluster. Clustering on `TITLE_CLUSTER_FIELDS=title,type,material,place` gives far more balanced and readable groups:
+*Choosing the fields.* Titles are often missing or generic in this collection (51 of 95 *masker* objects have none), which puts half the pool into one "(untitled)" cluster. Clustering on `METADATA_TEXTUAL_CLUSTERING_FIELDS=title,type,material,place` gives far more balanced and readable groups:
 
 | Search | Fields | Cluster sizes |
 |--------|--------|---------------|
@@ -433,9 +433,9 @@ SELECTION=random
 EXPORTER=json
 EXHIBITION_BUILDER=digital_wall
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
-TITLE_CLUSTER_FIELDS=title         # used by SELECTION=title_cluster
-TITLE_CLUSTER_STEERING_WEIGHT=0.6
-TITLE_CLUSTER_SHUFFLE_STEP=0.25
+METADATA_TEXTUAL_CLUSTERING_FIELDS=title         # used by SELECTION=metadata_textual_clustering
+METADATA_TEXTUAL_CLUSTERING_STEERING_WEIGHT=0.6
+METADATA_TEXTUAL_CLUSTERING_SHUFFLE_STEP=0.25
 ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json
 
 # Module settings (only the relevant ones are used)
@@ -460,8 +460,8 @@ REGISTRY = {
         "rdf_file":        "modules.knowledge_base.rdf_file.RDFFile",
     },
     "selection": {
-        "random":        "modules.selection.random_strategy.RandomStrategy",
-        "title_cluster": "modules.selection.title_cluster.TitleClusterStrategy",
+        "random":                      "modules.selection.random_strategy.RandomStrategy",
+        "metadata_textual_clustering": "modules.selection.metadata_textual_clustering.MetadataTextualClusteringStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -644,7 +644,7 @@ museum_curation/
 │   │   ├── _stub.py
 │   │   ├── utils.py                     # unseen(), largest_remainder(), metadata_linearization()
 │   │   ├── clustering.py                # Clusterer ABC + KMeansClusterer
-│   │   ├── title_cluster.py          # cluster → one per cluster → steer to kept clusters
+│   │   ├── metadata_textual_clustering.py # cluster → one per cluster → steer to kept clusters
 │   │   └── random_strategy.py           # random.sample(unseen, n)
 │   ├── retrieval_evaluator/
 │   │   ├── _stub.py

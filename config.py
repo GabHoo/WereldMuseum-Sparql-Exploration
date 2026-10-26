@@ -32,8 +32,8 @@ REGISTRY = {
         "rdf_file":        "modules.knowledge_base.rdf_file.RDFFile",
     },
     "selection": {
-        "random":        "modules.selection.random_strategy.RandomStrategy",
-        "title_cluster": "modules.selection.title_cluster.TitleClusterStrategy",
+        "random":                      "modules.selection.random_strategy.RandomStrategy",
+        "metadata_textual_clustering": "modules.selection.metadata_textual_clustering.MetadataTextualClusteringStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -94,17 +94,17 @@ def _build_knowledge_base(key: str):
 
 def _build_selection(key: str):
     cls = _load_class("selection", key)
-    if key == "title_cluster":
+    if key == "metadata_textual_clustering":
         from modules.embedding import DEFAULT_MODEL, TextEmbedder
         from modules.selection.clustering import KMeansClusterer
         from modules.selection.utils import metadata_linearization
         return cls(
             embedder=TextEmbedder(os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL)),
             clusterer=KMeansClusterer(),
-            linearize=metadata_linearization(os.getenv("TITLE_CLUSTER_FIELDS", "title")),
-            n_clusters=int(os.getenv("TITLE_CLUSTER_N_CLUSTERS", str(2 * N_PER_BATCH))),
-            steering_weight=float(os.getenv("TITLE_CLUSTER_STEERING_WEIGHT", "0.6")),
-            shuffle_step=float(os.getenv("TITLE_CLUSTER_SHUFFLE_STEP", "0.25")),
+            linearize=metadata_linearization(os.getenv("METADATA_TEXTUAL_CLUSTERING_FIELDS", "title")),
+            n_clusters=int(os.getenv("METADATA_TEXTUAL_CLUSTERING_N_CLUSTERS", str(2 * N_PER_BATCH))),
+            steering_weight=float(os.getenv("METADATA_TEXTUAL_CLUSTERING_STEERING_WEIGHT", "0.6")),
+            shuffle_step=float(os.getenv("METADATA_TEXTUAL_CLUSTERING_SHUFFLE_STEP", "0.25")),
         )
     return cls()
 

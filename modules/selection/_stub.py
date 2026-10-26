@@ -13,7 +13,7 @@ class MySelectionStrategy(SelectionStrategy):
       modules/selection/utils.py       unseen(), largest_remainder(), metadata_linearization()
       modules/selection/clustering.py  Clusterer / KMeansClusterer
       modules/embedding.py             TextEmbedder (shared embedding model)
-    See title_cluster.py for a complete example.
+    See metadata_textual_clustering.py for a complete example.
     """
 
     def prepare(self, pool: list) -> None:

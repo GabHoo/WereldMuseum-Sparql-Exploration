@@ -1,5 +1,5 @@
 """
-TitleClusterStrategy — cluster the pool, show one of each, then steer
+MetadataTextualClusteringStrategy — cluster the pool, show one of each, then steer
 towards the clusters the user keeps from, while always keeping some exploration.
 
 prepare(pool)   once per search
@@ -43,7 +43,7 @@ from modules.selection.utils import empty_streak, largest_remainder, metadata_li
 _UNTITLED = "(untitled)"
 
 
-class TitleClusterStrategy(SelectionStrategy):
+class MetadataTextualClusteringStrategy(SelectionStrategy):
     def __init__(
         self,
         embedder: TextEmbedder,
