@@ -90,13 +90,17 @@ def search():
         # Step 1: translate the natural-language request into a SPARQL query.
         # This returns the URIs of candidate artifacts in the knowledge base.
         sparql = qg.convert(nl_query, {})
-        rows = MODULES["knowledge_base"].execute(sparql)
-        # Keep only valid artifact references; ignore any malformed rows.
-        ids = [r["artifact"] for r in rows if r.get("artifact")]
+        # Preloaded demo queries are served from disk (see modules/preload.py).
+        pool_cache = MODULES.get("pool_cache")
+        artifacts = pool_cache.get(sparql) if pool_cache else None
+        if artifacts is None:
+            rows = MODULES["knowledge_base"].execute(sparql)
+            # Keep only valid artifact references; ignore any malformed rows.
+            ids = [r["artifact"] for r in rows if r.get("artifact")]
 
-        # Step 2: fetch the full metadata for each matched artifact so the backend
-        # can build a display pool and later rank/return the chosen items.
-        artifacts = MODULES["artifact_fetcher"].fetch(ids)
+            # Step 2: fetch the full metadata for each matched artifact so the backend
+            # can build a display pool and later rank/return the chosen items.
+            artifacts = MODULES["artifact_fetcher"].fetch(ids)
     except Exception as exc:
         # Any issue in query generation, SPARQL execution, or artifact fetching is
         # surfaced to the client while still returning the matched concepts.
@@ -165,7 +169,10 @@ def selection():
 @app.route("/representations/status")
 def representations_status():
     representation = MODULES.get("representation")
-    return jsonify(representation.status() if representation else {"enabled": False})
+    status = representation.status() if representation else {"enabled": False}
+    if PRELOADER:
+        status["preload"] = PRELOADER.status()
+    return jsonify(status)
 
 
 @app.route("/export", methods=["POST"])
@@ -186,6 +193,12 @@ def export():
         headers={"Content-Disposition": "attachment; filename=exhibition.json"},
     )
 
+
+# Demo warm-up (PRELOAD_QUERIES). Under the debug reloader this module is
+# loaded twice; only the serving child process (WERKZEUG_RUN_MAIN) preloads.
+PRELOADER = config.build_preloader(MODULES, _build_pool)
+if PRELOADER and (__name__ != "__main__" or os.environ.get("WERKZEUG_RUN_MAIN") == "true"):
+    PRELOADER.start()
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

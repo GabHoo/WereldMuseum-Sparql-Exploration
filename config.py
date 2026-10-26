@@ -172,6 +172,18 @@ def _build_representation(key: str, image_cache):
     )
 
 
+def build_preloader(modules: dict, build_pool):
+    """Preloader for the demo queries in PRELOAD_QUERIES, or None when unset."""
+    path = os.getenv("PRELOAD_QUERIES", "").strip()
+    if not path:
+        return None
+    import json
+    import pathlib
+    from modules.preload import Preloader
+    queries = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    return Preloader(queries, modules, modules["pool_cache"], build_pool)
+
+
 def build_modules() -> dict:
     qg_key  = os.getenv("QUERY_GENERATION", "category_select")
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
@@ -190,6 +202,9 @@ def build_modules() -> dict:
         "logger":               _build_logger(),
         "query_generation_key": qg_key,
     }
+    if os.getenv("PRELOAD_QUERIES", "").strip():
+        from modules.preload import PoolCache
+        modules["pool_cache"] = PoolCache(os.getenv("POOL_CACHE_DIR", ".cache/pools"))
     if re_key:
         modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)
     if rep_key:

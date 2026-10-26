@@ -420,14 +420,15 @@
       transition: background 0.1s, color 0.1s, border-color 0.1s;
     }
 
-    .keep-btn:hover:not(:disabled) { background: #c8c0b0; }
+    .keep-btn:hover { background: #c8c0b0; }
 
-    .keep-btn:disabled {
+    .keep-btn.on {
       background: #2a4e2a;
       border-color: #2a4e2a;
       color: #b0f0b0;
-      cursor: default;
     }
+
+    .keep-btn.on:hover { background: #3d6b3d; border-color: #3d6b3d; }
 
     /* ── Controls bar ───────────────────────────────────────────────────── */
     #controls-bar {
@@ -834,7 +835,7 @@
             <div class="card-title">${esc(item.title)}</div>
             <div class="card-id"><a href="${esc(item.id)}" target="_blank" rel="noopener">${esc(shortId(item.id))}</a></div>
             <div class="card-actions">
-              <button class="keep-btn"${kept ? ' disabled' : ''}>${kept ? '✓ Kept' : 'Keep'}</button>
+              <button class="keep-btn${kept ? ' on' : ''}" title="${kept ? 'Click to unkeep' : 'Keep'}">${kept ? '✓ Kept' : 'Keep'}</button>
             </div>
           </div>
         </div>`;
@@ -843,7 +844,8 @@
     poolGrid.querySelectorAll('.artifact-card').forEach(card => {
       const item = displayed.find(i => i.id === card.dataset.id);
       if (!item) return;
-      card.querySelector('.keep-btn').addEventListener('click', () => keepItem(item));
+      card.querySelector('.keep-btn').addEventListener('click', () =>
+        isKept(item.id) ? removeItem(item.id) : keepItem(item));
       card.querySelector('.neg-btn').addEventListener('click', () => toggleNegative(item));
     });
 
@@ -859,8 +861,9 @@
     card.classList.toggle('kept', kept);
     card.classList.toggle('negative', isNegative(itemId));
     const btn = card.querySelector('.keep-btn');
-    btn.disabled    = kept;
+    btn.classList.toggle('on', kept);
     btn.textContent = kept ? '✓ Kept' : 'Keep';
+    btn.title       = kept ? 'Click to unkeep' : 'Keep';
   }
 
   /* ── Render selected / negatives ────────────────────────────────────── */
