@@ -93,13 +93,17 @@ def search():
         # Step 1: translate the natural-language request into a SPARQL query.
         # This returns the URIs of candidate artifacts in the knowledge base.
         sparql = qg.convert(nl_query, {})
-        rows = MODULES["knowledge_base"].execute(sparql)
-        # Keep only valid artifact references; ignore any malformed rows.
-        ids = [r["artifact"] for r in rows if r.get("artifact")]
+        # Preloaded demo queries are served from disk (see modules/preload.py).
+        pool_cache = MODULES.get("pool_cache")
+        artifacts = pool_cache.get(sparql) if pool_cache else None
+        if artifacts is None:
+            rows = MODULES["knowledge_base"].execute(sparql)
+            # Keep only valid artifact references; ignore any malformed rows.
+            ids = [r["artifact"] for r in rows if r.get("artifact")]
 
-        # Step 2: fetch the full metadata for each matched artifact so the backend
-        # can build a display pool and later rank/return the chosen items.
-        artifacts = MODULES["artifact_fetcher"].fetch(ids)
+            # Step 2: fetch the full metadata for each matched artifact so the backend
+            # can build a display pool and later rank/return the chosen items.
+            artifacts = MODULES["artifact_fetcher"].fetch(ids)
     except Exception as exc:
         # Any issue in query generation, SPARQL execution, or artifact fetching is
         # surfaced to the client while still returning the matched concepts.
@@ -108,6 +112,14 @@ def search():
     # Build the pool of candidates that the selection mechanism can rank. This
     # step also strips placeholder images and removes artifacts without usable images.
     pool = _build_pool(artifacts)
+
+    # Optional representations: embed the pool in the background into the
+    # search bank. A new search_id replaces the bank (also when the pool is
+    # empty); the same one adds to it.
+    representation = MODULES.get("representation")
+    if representation:
+        representation.on_search(pool, data.get("search_id"))
+
     if not pool:
         # If no valid artifacts remain after filtering, return an empty pool while
         # still including the underlying SPARQL and concepts for debugging.
@@ -118,6 +130,8 @@ def search():
     history = SelectionHistory()
     MODULES["selection"].prepare(pool)   # per-search work, e.g. clustering
     displayed = MODULES["selection"].select(pool, n, history)
+    if representation:
+        representation.prioritize([item["id"] for item in displayed])
 
     # Optional retrieval evaluation: score the current pool against the query
     # features when an evaluator is configured.
@@ -125,7 +139,8 @@ def search():
     metrics = evaluator.score(pool, query_features) if evaluator else None
 
     # Persist the search trail for auditing/logging before returning the result.
-    MODULES["logger"].log_search(nl_query, sparql, pool, displayed, query_features, exhibition_theme)
+    MODULES["logger"].log_search(nl_query, sparql, pool, displayed, query_features, exhibition_theme,
+                                 rerank=getattr(MODULES["selection"], "last_debug", None))
     return jsonify({"sparql": sparql, "pool": pool, "displayed": displayed, "concepts": concepts, "metrics": metrics})
 
 
@@ -137,8 +152,31 @@ def next_batch():
     history = SelectionHistory.from_dict(data.get("history", {}))
 
     displayed = MODULES["selection"].select(pool, n, history)
-    MODULES["logger"].log_next(data.get("history", {}), displayed)
+    representation = MODULES.get("representation")
+    if representation:
+        representation.prioritize([item["id"] for item in displayed])
+    MODULES["logger"].log_next(data.get("history", {}), displayed,
+                               rerank=getattr(MODULES["selection"], "last_debug", None))
     return jsonify({"displayed": displayed, "pool": pool})
+
+
+@app.route("/selection", methods=["POST"])
+def selection():
+    """Mirror the browser's kept items into the selection memory bank."""
+    representation = MODULES.get("representation")
+    if not representation:
+        return jsonify({"enabled": False})
+    data = request.get_json(silent=True) or {}
+    return jsonify(representation.sync_selection(data.get("items", [])))
+
+
+@app.route("/representations/status")
+def representations_status():
+    representation = MODULES.get("representation")
+    status = representation.status() if representation else {"enabled": False}
+    if PRELOADER:
+        status["preload"] = PRELOADER.status()
+    return jsonify(status)
 
 
 @app.route("/export", methods=["POST"])
@@ -234,6 +272,13 @@ def exhibition_render():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return Response(png, mimetype="image/png")
+
+
+# Demo warm-up (PRELOAD_QUERIES). Under the debug reloader this module is
+# loaded twice; only the serving child process (WERKZEUG_RUN_MAIN) preloads.
+PRELOADER = config.build_preloader(MODULES, _build_pool)
+if PRELOADER and (__name__ != "__main__" or os.environ.get("WERKZEUG_RUN_MAIN") == "true"):
+    PRELOADER.start()
 
 
 def _free_port(start: int) -> int:

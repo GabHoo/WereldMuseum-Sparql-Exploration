@@ -29,11 +29,12 @@ All module selection is done via `.env`. Copy `.env.example` to `.env` and set:
 QUERY_GENERATION=concept_query    # concept_query
 CONCEPT_MATCHER=thesaurus         # thesaurus (used by concept_query)
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
-SELECTION=random                  # random | metadata_textual_clustering
+SELECTION=random                  # random | metadata_textual_clustering | relevance_feedback
 EXPORTER=json                     # json
 EXHIBITION_BUILDER=digital_wall   # digital_wall
 RETRIEVAL_EVALUATOR=              # diversity | blank = off
 CHAT_MODEL=local_hf               # local_hf | nebula | blank = off (curation assistant)
+REPRESENTATION=                   # embeddinggemma | blank = off
 ```
 
 ### Search results
@@ -91,6 +92,14 @@ The curation assistant (chat box under the selection) answers questions about th
 |-----|-------------|
 | `digital_wall` | Wall editor: drag the selected objects onto a gallery wall, draw, add text and props. *Done → Generate* turns the scene into photorealistic exhibition renders via the OpenAI image-edit API (needs `OPENAI_API_KEY`; `DIGITAL_WALL_IMAGE_MODEL`, default `gpt-image-2`). |
 
+### Representation
+
+`REPRESENTATION=embeddinggemma` embeds every search result (image + metadata) with [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) in the background and keeps the vectors in memory: a *search bank* that is replaced on each new query, and a *selection bank* of kept objects that persists. `REPRESENTATION_VIEWS` picks the vectors per object (`fused` by default; also `image`, `text`). Progress: `GET /representations/status`. See DESIGN.md §10.
+
+### Selection
+
+`SELECTION=relevance_feedback` (needs `REPRESENTATION`) re-ranks each new batch from the curator's feedback: kept objects pull similar ones up, objects marked not relevant (the × that appears on a pool card under the mouse; listed under the selection panel's Negatives tab) push them down and are not shown again, and 2 of 10 objects are still picked at random. Settings are the `RERANK_*` variables in `.env.example`. Compare it with random selection offline with `python -m modules.selection.relevance_feedback <pool or runs.log> --target <concept URI>`. See DESIGN.md §4.
+
 ---
 
 ## Add a new module implementation
@@ -118,6 +127,7 @@ modules/
   selection/        Item selection strategies (random, metadata_textual_clustering) + shared helpers
   embedding.py      Shared text-embedding model
   retrieval_evaluator/ Optional pool diversity / surprise metrics
+  representation/   Optional object embeddings + memory banks (EmbeddingGemma 2)
   exporter/         Export formats
   chat_model/       Chat models for the curation assistant (local_hf, nebula)
   curation_assistant.py  Chat prompt + selection context sent to the chat model
@@ -127,6 +137,7 @@ templates/
   digital_wall.html Wall editor page (DigitalWall)
 static/
   digital_wall/     Wall editor script, styles and prop images
+tests/              Unit tests (python -m tests.test_relevance_feedback)
 .env.example        Documents all environment variables
 DESIGN.md           Full architecture and module specifications
 ```

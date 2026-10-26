@@ -21,7 +21,7 @@ class RunLogger:
     # ── public API ────────────────────────────────────────────────────────────
 
     def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None,
-                   exhibition_theme: str = "") -> None:
+                   exhibition_theme: str = "", rerank: dict = None) -> None:
         self._emit({
             "event":            "search",
             "query":            query,
@@ -32,14 +32,16 @@ class RunLogger:
             "displayed_ids":    [i["id"] for i in displayed],
             "pool":             pool,
             "displayed":        displayed,
+            "rerank":           rerank,
         })
 
-    def log_next(self, history: dict, displayed: list) -> None:
+    def log_next(self, history: dict, displayed: list, rerank: dict = None) -> None:
         self._emit({
             "event":         "next",
             "history":       history,
             "displayed_ids": [i["id"] for i in displayed],
             "displayed":     displayed,
+            "rerank":        rerank,
         })
 
     def log_export(self, items: list, meta: dict) -> None:

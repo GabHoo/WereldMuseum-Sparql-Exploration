@@ -334,6 +334,7 @@
     }
 
     .artifact-card {
+      position: relative;
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       display: flex;
@@ -345,6 +346,15 @@
     .artifact-card:hover { box-shadow: 0 0 0 1px var(--accent); }
 
     .artifact-card.kept { box-shadow: 0 0 0 2px #3d6b3d; }
+
+    /* Negative: the × marks a card not relevant (shown on hover, or once marked). */
+    .neg-btn { display: none; }
+    .artifact-card:not(.kept):hover .neg-btn,
+    .artifact-card.negative .neg-btn { display: block; }
+    .artifact-card.negative { box-shadow: 0 0 0 2px rgba(160,30,30,0.85); }
+    .artifact-card.negative .neg-btn { background: rgba(160,30,30,0.85); }
+    .artifact-card.negative .card-img,
+    .artifact-card.negative .card-no-img { opacity: 0.35; }
 
     .card-img {
       width: 100%;
@@ -406,14 +416,15 @@
       transition: background 0.1s, color 0.1s, border-color 0.1s;
     }
 
-    .keep-btn:hover:not(:disabled) { background: #c8c0b0; }
+    .keep-btn:hover { background: #c8c0b0; }
 
-    .keep-btn:disabled {
+    .keep-btn.on {
       background: #2a4e2a;
       border-color: #2a4e2a;
       color: #b0f0b0;
-      cursor: default;
     }
+
+    .keep-btn.on:hover { background: #3d6b3d; border-color: #3d6b3d; }
 
     /* ── Controls bar ───────────────────────────────────────────────────── */
     #controls-bar {
@@ -460,8 +471,18 @@
       padding: 20px 20px 16px;
     }
 
-    #selected-section .section-label { color: var(--accent); }
-    #selected-section .section-stat  { color: var(--text-muted); }
+    #selected-section .section-meta { margin-bottom: 0; }
+
+    .sel-tab {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 0 0 3px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .sel-tab:hover  { color: var(--accent); }
+    .sel-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
     #selection-diversity {
       margin: 12px 0 4px;
@@ -474,13 +495,14 @@
 
     .empty-msg { color: #8a8070; }
 
-    #selected-grid {
+    #selected-grid, #negative-grid {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
       min-height: 70px;
       padding: 12px 0 8px;
     }
+    #selected-grid[hidden], #negative-grid[hidden] { display: none; }
 
     .sel-card {
       position: relative;
@@ -676,14 +698,17 @@
 
   <div id="selected-section">
     <div class="section-meta">
-      <span class="section-label">Selection</span>
-      <span class="section-stat" id="sel-stat">0 items</span>
+      <button class="sel-tab section-label active" data-tab="selected-grid">Selection (<span id="sel-stat">0</span>)</button>
+      <button class="sel-tab section-label" data-tab="negative-grid">Negatives (<span id="neg-stat">0</span>)</button>
     </div>
     <div id="selection-diversity" aria-live="polite">
       Internal diversity (Shannon): <strong id="selection-diversity-value">0.000</strong>
     </div>
     <div id="selected-grid">
       <span class="empty-msg">No items selected yet.</span>
+    </div>
+    <div id="negative-grid" hidden>
+      <span class="empty-msg">No negatives yet. Mark a pool item with its × to add it.</span>
     </div>
     <div class="action-row">
       <button id="export-btn" disabled>Export →</button>
@@ -716,10 +741,11 @@
   /* ── State ──────────────────────────────────────────────────────────── */
   let pool           = [];   // full result pool for current search
   let selected       = [];   // accumulated yes-picks — persists across searches
+  let negatives      = [];   // items marked not relevant (the × on a card) — persists across searches
   let currentMetrics = null; // last metrics response from /search
   let currentConcepts = [];  // concepts from /search: [{label, uri, feature}]
   let meta     = { query: '', sparql: '', exhibition_theme: '' };
-  let serverHistory = { accepted: [], rejected: [], seen: [] };
+  let serverHistory = { accepted: [], seen: [] };   // rejected: see historyForServer()
 
   // Batch navigation: each entry is {displayed: [...], choices: {id: 'yes'|'no'}}
   // batchIdx points at what's currently shown; only atFrontier() triggers server calls.
@@ -729,6 +755,9 @@
   function atFrontier() { return batches.length > 0 && batchIdx === batches.length - 1; }
   function curBatch()   { return batches[batchIdx] || { displayed: [] }; }
   function isKept(id)   { return selected.some(s => s.id === id); }
+  function isNegative(id) { return negatives.some(s => s.id === id); }
+  // The history sent to /next: rejected is exactly the explicit negatives.
+  function historyForServer() { return { ...serverHistory, rejected: negatives.map(i => i.id) }; }
 
   /* ── DOM ────────────────────────────────────────────────────────────── */
   const poolSection = document.getElementById('pool-section');
@@ -741,6 +770,8 @@
   const selGrid     = document.getElementById('selected-grid');
   const selStat     = document.getElementById('sel-stat');
   const selectionDiversityValue = document.getElementById('selection-diversity-value');
+  const negGrid     = document.getElementById('negative-grid');
+  const negStat     = document.getElementById('neg-stat');
   const exportBtn      = document.getElementById('export-btn');
   const exhibitionBtn  = document.getElementById('exhibition-btn');
   const poolMetrics    = document.getElementById('pool-metrics');
@@ -846,34 +877,35 @@
 
     poolGrid.innerHTML = displayed.map(item => {
       const kept  = isKept(item.id);
+      const neg   = isNegative(item.id);
       const img   = imgTag(item, 'card-img', 'card-no-img', 'no image');
       return `
-        <div class="artifact-card${kept ? ' kept' : ''}" data-id="${esc(item.id)}">
+        <div class="artifact-card${kept ? ' kept' : ''}${neg ? ' negative' : ''}" data-id="${esc(item.id)}">
+          <button class="sel-remove neg-btn" title="Not relevant">×</button>
           ${img}
           <div class="card-body">
             <div class="card-title">${esc(item.title)}</div>
             <div class="card-id"><a href="${esc(item.id)}" target="_blank" rel="noopener">${esc(shortId(item.id))}</a></div>
             <div class="card-actions">
-              <button class="keep-btn"${kept ? ' disabled' : ''}>${kept ? '✓ Kept' : 'Keep'}</button>
+              <button class="keep-btn${kept ? ' on' : ''}" title="${kept ? 'Click to unkeep' : 'Keep'}">${kept ? '✓ Kept' : 'Keep'}</button>
             </div>
           </div>
         </div>`;
     }).join('');
 
     poolGrid.querySelectorAll('.artifact-card').forEach(card => {
-      const id   = card.dataset.id;
-      const item = displayed.find(i => i.id === id);
-      const btn  = card.querySelector('.keep-btn');
-      if (btn && item && !isKept(id)) {
-        btn.addEventListener('click', () => keepItem(item, btn, card));
-      }
+      const item = displayed.find(i => i.id === card.dataset.id);
+      if (!item) return;
+      card.querySelector('.keep-btn').addEventListener('click', () =>
+        isKept(item.id) ? removeItem(item.id) : keepItem(item));
+      card.querySelector('.neg-btn').addEventListener('click', () => toggleNegative(item));
     });
 
     poolStat.textContent = `${pool.length} object${pool.length !== 1 ? 's' : ''}`;
     updateNav();
   }
 
-  /* ── Render selected ────────────────────────────────────────────────── */
+  /* ── Selection diversity ────────────────────────────────────────────── */
   const DIVERSITY_FIELDS = [
     'type', 'material', 'place', 'date', 'maker', 'intended_use', 'acquisition', 'acquired_from'
   ];
@@ -908,28 +940,62 @@
     return entropies.length ? entropies.reduce((sum, value) => sum + value, 0) / entropies.length : 0;
   }
 
-  function renderSelected() {
-    selStat.textContent = `${selected.length} item${selected.length !== 1 ? 's' : ''}`;
-    selectionDiversityValue.textContent = calculateSelectionDiversity(selected).toFixed(3);
-    if (!selected.length) {
-      selGrid.innerHTML = '<span class="empty-msg">No items selected yet.</span>';
-    } else {
-      selGrid.innerHTML = selected.map(item => {
-        const img   = imgTag(item, '', 'sel-card-no-img');
-        return `
-          <div class="sel-card">
-            <button class="sel-remove" data-id="${esc(item.id)}" title="Remove">×</button>
-            ${img}
-            <div class="sel-card-title">${esc(item.title)}</div>
-          </div>`;
-      }).join('');
-      selGrid.querySelectorAll('.sel-remove').forEach(btn => {
-        btn.addEventListener('click', () => removeItem(btn.dataset.id));
-      });
+  // Bring a pool card on screen (if any) in line with the kept / negative state.
+  function refreshCard(itemId) {
+    const card = poolGrid.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
+    if (!card) return;
+    const kept = isKept(itemId);
+    card.classList.toggle('kept', kept);
+    card.classList.toggle('negative', isNegative(itemId));
+    const btn = card.querySelector('.keep-btn');
+    btn.classList.toggle('on', kept);
+    btn.textContent = kept ? '✓ Kept' : 'Keep';
+    btn.title       = kept ? 'Click to unkeep' : 'Keep';
+  }
+
+  /* ── Render selected / negatives ────────────────────────────────────── */
+  function renderCardList(grid, items, onRemove, emptyMsg) {
+    if (!items.length) {
+      grid.innerHTML = `<span class="empty-msg">${esc(emptyMsg)}</span>`;
+      return;
     }
+    grid.innerHTML = items.map(item => {
+      const img   = imgTag(item, '', 'sel-card-no-img');
+      return `
+        <div class="sel-card">
+          <button class="sel-remove" data-id="${esc(item.id)}" title="Remove">×</button>
+          ${img}
+          <div class="sel-card-title">${esc(item.title)}</div>
+        </div>`;
+    }).join('');
+    grid.querySelectorAll('.sel-remove').forEach(btn => {
+      btn.addEventListener('click', () => onRemove(btn.dataset.id));
+    });
+  }
+
+  function renderSelected() {
+    selStat.textContent = selected.length;
+    selectionDiversityValue.textContent = calculateSelectionDiversity(selected).toFixed(3);
+    renderCardList(selGrid, selected, removeItem, 'No items selected yet.');
     exportBtn.disabled     = selected.length === 0;
     exhibitionBtn.disabled = selected.length === 0;
   }
+
+  function renderNegatives() {
+    negStat.textContent = negatives.length;
+    renderCardList(negGrid, negatives, removeNegative,
+      'No negatives yet. Mark a pool item with its × to add it.');
+  }
+
+  // Tabs: Selection | Negatives
+  document.querySelectorAll('.sel-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.sel-tab').forEach(t => {
+        t.classList.toggle('active', t === tab);
+        document.getElementById(t.dataset.tab).hidden = t !== tab;
+      });
+    });
+  });
 
   /* ── Pool metrics ───────────────────────────────────────────────────── */
   function renderMetrics(metrics) {
@@ -1024,36 +1090,61 @@
     featureStats.hidden = false;
   }
 
+  /* ── Selection memory bank ──────────────────────────────────────────── */
+  // Mirror the kept items to the server's selection bank (Representation
+  // module; a no-op when it is disabled). Fire-and-forget: the full list is
+  // sent each time, so a lost request is repaired by the next one.
+  function syncSelection() {
+    fetch('/selection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: selected }),
+    }).catch(() => {});
+  }
+
   /* ── Keep ───────────────────────────────────────────────────────────── */
-  function keepItem(item, btn, card) {
+  function keepItem(item) {
+    if (isKept(item.id)) return;
     selected.push(item);
-    card.classList.add('kept');
-    btn.disabled    = true;
-    btn.textContent = '✓ Kept';
+    if (!serverHistory.accepted.includes(item.id)) serverHistory.accepted.push(item.id);
+    // Keep and negative never overlap: keeping a negative moves it over.
+    const negIdx = negatives.findIndex(s => s.id === item.id);
+    if (negIdx !== -1) { negatives.splice(negIdx, 1); renderNegatives(); }
+    refreshCard(item.id);
     renderSelected();
+    syncSelection();
   }
 
   /* ── Remove from selected ───────────────────────────────────────────── */
+  // Un-keeping is not a negative: the item just goes back to neutral.
   function removeItem(itemId) {
     const idx = selected.findIndex(s => s.id === itemId);
     if (idx === -1) return;
     selected.splice(idx, 1);
     const accIdx = serverHistory.accepted.indexOf(itemId);
     if (accIdx !== -1) serverHistory.accepted.splice(accIdx, 1);
-    serverHistory.rejected.push(itemId);
-    // Restore card in pool if currently visible
-    const card = poolGrid.querySelector(`[data-id="${CSS.escape(itemId)}"]`);
-    if (card) {
-      card.classList.remove('kept');
-      const btn  = card.querySelector('.keep-btn');
-      const item = curBatch().displayed.find(i => i.id === itemId);
-      if (btn && item) {
-        btn.disabled    = false;
-        btn.textContent = 'Keep';
-        btn.addEventListener('click', () => keepItem(item, btn, card));
-      }
-    }
+    syncSelection();
+    refreshCard(itemId);
     renderSelected();
+  }
+
+  /* ── Negatives ──────────────────────────────────────────────────────── */
+  // The × on a pool card marks the item not relevant, or un-marks it. Takes
+  // effect on the next batch: /next receives the negatives as history.rejected.
+  function toggleNegative(item) {
+    if (isKept(item.id)) return;
+    if (isNegative(item.id)) return removeNegative(item.id);
+    negatives.push(item);
+    refreshCard(item.id);
+    renderNegatives();
+  }
+
+  function removeNegative(itemId) {
+    const idx = negatives.findIndex(s => s.id === itemId);
+    if (idx === -1) return;
+    negatives.splice(idx, 1);
+    refreshCard(itemId);
+    renderNegatives();
   }
 
   /* ── Concept tags ───────────────────────────────────────────────────── */
@@ -1100,13 +1191,15 @@
     // Reset navigation; selected persists intentionally
     batches       = [];
     batchIdx      = -1;
-    serverHistory = { accepted: [], rejected: [], seen: [] };
+    serverHistory = { accepted: [], seen: [] };   // rejected: see historyForServer()
+    // One id per search: tells the Representation module a new query started.
+    const searchId = Date.now() + '-' + Math.random().toString(36).slice(2);
 
     try {
       const r = await fetch('/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, n: N, exhibition_theme: exhibitionTheme() }),
+        body: JSON.stringify({ query, n: N, exhibition_theme: exhibitionTheme(), search_id: searchId }),
       });
       const d = await r.json();
       renderConcepts(d.concepts || []);
@@ -1152,12 +1245,7 @@
       return;
     }
 
-    // At frontier: items not kept → rejected; fetch new batch
-    const { displayed } = curBatch();
-    const keptIds = new Set(selected.map(i => i.id));
-    serverHistory.accepted.push(...displayed.filter(i =>  keptIds.has(i.id)).map(i => i.id));
-    serverHistory.rejected.push(...displayed.filter(i => !keptIds.has(i.id)).map(i => i.id));
-
+    // At frontier: fetch a new batch, re-ranked on the kept items and negatives
     nextBtn.disabled = true;
     statusMsg.textContent = 'Loading…';
 
@@ -1165,7 +1253,7 @@
       const r = await fetch('/next', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pool, n: N, history: serverHistory }),
+        body: JSON.stringify({ pool, n: N, history: historyForServer() }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed');
@@ -1268,7 +1356,7 @@
   /* ── Session state ──────────────────────────────────────────────────── */
   // The page state lives in sessionStorage (this tab only, gone when the tab
   // closes), so going to the exhibition canvas and back, or reloading, returns
-  // to the same search, batch, selection, theme and chat.
+  // to the same search, batch, selection, negatives, theme and chat.
   const SESSION_KEY = 'curation-state';
 
   function saveSession() {
@@ -1277,7 +1365,7 @@
           .map(m => ({ role: m.classList.contains('user') ? 'user' : 'assistant', text: m.textContent }))
       : [];
     const state = {
-      pool, selected, currentMetrics, currentConcepts, meta, serverHistory, batches, batchIdx,
+      pool, selected, negatives, currentMetrics, currentConcepts, meta, serverHistory, batches, batchIdx,
       keyword: keywordInput.value,
       theme: themeInput.value,
       chat,
@@ -1294,6 +1382,7 @@
 
     pool            = state.pool || [];
     selected        = state.selected || [];
+    negatives       = state.negatives || [];
     currentMetrics  = state.currentMetrics || null;
     currentConcepts = state.currentConcepts || [];
     meta            = state.meta || meta;
@@ -1306,6 +1395,7 @@
 
     renderConcepts(currentConcepts);
     renderSelected();
+    renderNegatives();
     if (batches.length) {
       poolSection.hidden = false;
       renderPool();
@@ -1330,6 +1420,9 @@
   });
 
   restoreSession();
+  // After restoring: the server's selection bank (Representation module) gets
+  // the restored list; on a fresh page that is empty, which clears a stale bank.
+  syncSelection();
 </script>
 
 <style>

@@ -22,6 +22,9 @@ User types a keyword query, optionally an exhibition theme
         │                        [ArtifactFetcher] ──FETCH query──▶ Artifact objects ──▶ pool
         │                                    │      (same fields for every object, lists for multi-values)
         └─ query features ─▶ [RetrievalEvaluator] ◀── pool   (optional: diversity / surprise)
+                                             │
+                         pool ─▶ [Representation] ─▶ search bank     (optional, background:
+                         kept ─▶                 ─▶ selection bank   EmbeddingGemma 2 vectors)
                                              ▼
                        [SelectionStrategy] ──picks N (~10)──▶ items shown to user
                                              │
@@ -44,15 +47,16 @@ User types a keyword query, optionally an exhibition theme
 | 2 | ConceptMatcher | `CONCEPT_MATCHER` | `match(nl_query) -> list[dict]` (used inside `concept_query`) |
 | 3 | KnowledgeBase | `KNOWLEDGE_BASE` | `execute(sparql) -> list[dict]` |
 | — | ArtifactFetcher | `ARTIFACT_FIELDS_FILE` | `fetch(ids) -> list[Artifact]` (infrastructure, configured per graph) |
-| 4 | SelectionStrategy | `SELECTION` | `select(pool, n, history) -> list[dict]` |
+| 4 | SelectionStrategy | `SELECTION` | `select(pool, n, history) -> list[dict]` (`relevance_feedback` uses the Representation module) |
 | 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
 | 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
 | 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
 | 8 | ExhibitionBuilder | `EXHIBITION_BUILDER` | `build(export_data) -> str` (HTML page), optional `render(...)` |
 | 9 | ChatModel | `CHAT_MODEL` | `chat(messages) -> str` (used by the CurationAssistant, optional) |
 | — | CurationAssistant | `CHAT_CONTEXT_FIELDS` | `reply(message, items, exhibition_theme) -> str` (infrastructure around the ChatModel) |
+| 10 | Representation | `REPRESENTATION` | `ObjectEncoder.encode(objects) -> [{view: vector}]`, held in memory banks (optional) |
 
-All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`).
+All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`, the ObjectEncoder in `modules/representation/base.py`).
 
 ### 1. QueryGeneration
 
@@ -186,7 +190,7 @@ Picks which N items to show the user from the remaining pool, using feedback his
 |--|--|
 | **Input** | `pool: list[dict]` — all pool items (`id`, `title`, `score`, `properties`, optional `selection`) |
 | | `n: int` — number of items to return |
-| | `history: SelectionHistory` — `accepted` (ids kept so far in this search), `rejected` (shown, not kept), `seen` (every id shown) |
+| | `history: SelectionHistory` — `accepted` (ids kept so far in this search), `rejected` (ids explicitly marked not relevant), `seen` (every id shown) |
 | **Output** | `list[dict]` — up to n items from pool, none of them in `history.seen` |
 | **Side effect** | May write `item["score"]` / `item["selection"]`; the changes travel with the pool into the next call |
 
@@ -215,6 +219,7 @@ class SelectionStrategy(ABC):
 |------|-----|--------------|
 | `RandomStrategy` | `random` | `random.sample` over unseen items; ignores feedback. |
 | `MetadataTextualClusteringStrategy` | `metadata_textual_clustering` | Clusters the pool, shows one item per cluster first, then steers towards the clusters the user keeps from (below). |
+| `RelevanceFeedbackStrategy` | `relevance_feedback` | Re-ranks the unseen pool after every batch from the kept items and the explicit negatives, on object embeddings from the Representation module (§10) (below). |
 
 #### MetadataTextualClusteringStrategy (`metadata_textual_clustering`)
 
@@ -261,6 +266,32 @@ Simulated on the *masker* pool (95 objects, 18 clusters), a curator who never ke
 | masker | `title,type,material,place` | 23, 17, 16, 11, 11, 6, 5, 4, 2 |
 | Liberia | `title` | 26, 21, 12, 6, 5, 4, 3, 1, 1 |
 | Liberia | `title,type,material,place` | 18, 15, 14, 8, 7, 5, 5, 5, 2 (e.g. "gras · Liberia", "hout · Liberia", "hoeden · plantenvezel · Liberia") |
+
+#### Relevance feedback (`SELECTION=relevance_feedback`)
+
+`RelevanceFeedbackStrategy` re-ranks the unseen pool after every batch from the curator's feedback, using the Representation module's vectors (§10), which `config.py` injects. Feedback accumulates over the query:
+
+- **Positives P**: `history.accepted` plus the selection bank, since an item can be kept after going back to an earlier batch. With `RERANK_CROSS_QUERY=false`, only kept items that are in the current pool count.
+- **Negatives N**: `history.rejected` minus P. These are the objects the curator explicitly marked not relevant with the × on a pool card. Being shown and not kept, or being removed from the selection, is not a negative. N weighs less than P (`RERANK_GAMMA=0.5` against `RERANK_BETA=1.0`). Negatives persist across searches, follow `RERANK_CROSS_QUERY` as positives do, and are never shown again. One from an earlier query counts while its vector is still in the encoder cache.
+
+In the browser, the × appears when the mouse is over a card that isn't kept. Clicking it again un-marks the card, and Keep on a negative moves it to the selection. The selection panel has two tabs, **Selection** and **Negatives**, and a negative can be removed from the second. Changes take effect on the next batch.
+
+Each unseen candidate with a vector is scored, in the `RERANK_VIEW` space:
+
+| `RERANK_SCORING` | Score |
+|--|--|
+| `rocchio` (default) | `c · (β·centroid(P) − γ·centroid(N))` |
+| `knn` | `β · mean top-k sim(c, P) − γ · mean top-k sim(c, N)` (`RERANK_K`); better when the selection has several themes |
+
+A batch of n has `round(RERANK_EXPLORE·n)` random candidates (default 2 of 10), so feedback keeps coming from the rest of the pool. The other slots are picked greedily by MMR, `argmax λ·s(c) − (1−λ)·max sim(c, picked)` (`RERANK_MMR_LAMBDA=0.7`), so they are not near-duplicates. The batch is shuffled, so ranked and explored items cannot be told apart by position. Scores are written to `item["score"]`.
+
+Vectors are filled in the background, so the strategy:
+- ranks only the candidates that already have a vector and fills the free slots at random;
+- waits at most `RERANK_WAIT` seconds for the feedback items' own vectors, which are usually ready because `/search` and `/next` call `prioritize` on the batch on screen.
+
+Without feedback (the first batch of a query), without encoded feedback, or without the Representation module, it selects at random. What it did (mode, |P|, |N|, coverage, ranked and explored ids, scores) goes into the `rerank` field of the `search` and `next` log records.
+
+To compare it offline with random selection, run `python -m modules.selection.relevance_feedback <pool.json | export.json | runs.log> --target <concept URI> [--neg-rate 0.3]`. A simulated curator keeps the objects that have the target type, material or place, and marks a share `--neg-rate` of the other objects shown as negatives. The command prints the acceptance rate, cumulative recall and batch diversity per batch. Without `--target`, it lists the most common concepts in the pool.
 
 ---
 
@@ -354,8 +385,8 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 
 | | |
 |--|--|
-| **Events logged** | `search` — query, exhibition_theme, query_features, generated SPARQL, full pool, first displayed batch |
-| | `next` — current history (accepted / rejected / seen), next displayed batch |
+| **Events logged** | `search` — query, exhibition_theme, query_features, generated SPARQL, full pool, first displayed batch, `rerank` (what a re-ranking strategy did) |
+| | `next` — current history (accepted / rejected / seen), next displayed batch. Since explicit negatives, `rejected` holds only the objects marked not relevant; older logs recorded every shown-but-not-kept object there |
 | | `export` — exported items and metadata |
 | | `chat` — curator message, exhibition_theme, selected item ids, assistant reply |
 | **Format** | JSON Lines (`.jsonl` / `.log`): one `json.loads()`-able object per line, append-only |
@@ -365,15 +396,13 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 ```python
 class RunLogger:
     def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None,
-                   exhibition_theme: str = "") -> None: ...
-    def log_next(self, history: dict, displayed: list) -> None: ...
+                   exhibition_theme: str = "", rerank: dict = None) -> None: ...
+    def log_next(self, history: dict, displayed: list, rerank: dict = None) -> None: ...
     def log_export(self, items: list, meta: dict) -> None: ...
     def log_chat(self, message: str, reply: str, items: list, exhibition_theme: str = "") -> None: ...
 ```
 
 Each record automatically gets a `timestamp` field (UTC ISO-8601).
-
----
 
 ### 8. ExhibitionBuilder
 
@@ -420,6 +449,57 @@ Leave `CHAT_MODEL` blank to disable the assistant: the chat box is not shown and
 
 ---
 
+### 10. Representation (optional)
+
+Embeds collection objects (image + metadata) as vectors and keeps them in memory for downstream tasks such as re-ranking and recommendation. Enabled by setting `REPRESENTATION=embeddinggemma`; when unset, the model is never loaded and nothing else changes. Everything lives in `modules/representation/`.
+
+**Encoder.** `EmbeddingGemmaEncoder` uses [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) (`REPRESENTATION_MODEL`), which maps text and images into one 768-d space. Per object it computes the configured views (`REPRESENTATION_VIEWS`, default `fused`):
+
+| View | Input |
+|------|-------|
+| `fused` | metadata text + `<\|image\|>` with the object's image, as one input (text only if no image is available) |
+| `image` | the image alone |
+| `text` | the metadata text alone |
+
+The text is in the model's document format: `title: <title> | text: type: …; material: …; place: …; date: …; maker: …; intended use: …; description: …` (description cut at 500 characters). The image is the first non-placeholder image, taken from ImageCache's on-disk thumbnail, so no second download path exists. Vectors are L2-normalised, so cosine similarity is a dot product; `REPRESENTATION_DIM` truncates them (Matryoshka: 512 / 256 / 128) and re-normalises. The audio encoder is never loaded; float16 is refused because it silently breaks this model.
+
+**Cost.** Images dominate: at the model's default 280 vision tokens per image, a fused vector takes ~0.8 s per object on Apple MPS (~3× slower on CPU), so a 100-object pool fills in ~1.5 min; text-only is ~100× cheaper. `REPRESENTATION_IMAGE_TOKENS=140` (or `70`) is ~2× (~4×) faster, with vectors at cosine ~0.98 (~0.97) to the default ones. The worker fetches each batch's thumbnails 4 at a time.
+
+```python
+class ObjectEncoder(ABC):
+    views: tuple                      # subset of ("fused", "image", "text")
+    def encode(self, objects: list[dict]) -> list[dict]: ...   # [{id, text, image_path}] → [{view: vec}]
+    def object_text(self, properties: dict) -> str: ...       # Artifact dict → text to embed
+```
+
+**Memory banks.** `RepresentationService` (`memory_bank.py`) holds two `MemoryBank`s:
+
+| Bank | Holds | Refresh |
+|------|-------|---------|
+| search bank | the pool of the current query | replaced on every new query (`/search` with a new `search_id`); calls with the same `search_id` add to it |
+| selection bank | the objects the curator kept | persists across queries; mirrors the browser's `selected` list via `POST /selection` (full list each time, so it is idempotent and a page reload clears it) |
+
+Encoding runs on one background thread in batches (`REPRESENTATION_BATCH_SIZE`), so `/search` is as fast as without the module. Selection batches go first, then the batch on screen (`/search` and `/next` call `prioritize` with the displayed ids, so feedback on it is usable after about two batches rather than at the end of the pool), then the rest of the pool; batches of a superseded query are skipped. Vectors are cached per object id (LRU, `REPRESENTATION_CACHE_SIZE`), so a kept item, normally already encoded as a search result, is not encoded again, and objects returning in later queries are free.
+
+**Using the banks** (e.g. from a future SelectionStrategy, which gets the service injected in `config.py`):
+
+```python
+rep = MODULES["representation"]
+ids, mat = rep.search_bank.matrix("fused")       # rows follow pool order
+taste    = rep.selection_bank.centroid("fused")  # None while nothing is kept
+scores   = mat @ taste                           # similarity of each result to the selection
+rep.similarity("fused", ids, rep.selection_bank) # items × kept items
+rep.prioritize(ids)                              # encode these search results next
+rep.wait("search", timeout=30)                   # block until the search bank is encoded
+rep.status()                                     # {search: {total, done, ready}, selection: {…}}
+```
+
+**State.** This is the one place where the server keeps state between requests. It assumes one curator per server process; every method takes a `session` argument (only `"default"` is used) so per-user banks can be added later.
+
+CLI check, without the app: `python -m modules.representation.embeddinggemma export.json [--k 3]` embeds an export and prints each object's nearest neighbours per view.
+
+---
+
 ## Default Configuration & Implementation Selection
 
 Configuration lives in two files:
@@ -429,13 +509,14 @@ Configuration lives in two files:
 QUERY_GENERATION=concept_query     # concept_query
 CONCEPT_MATCHER=thesaurus          # used by concept_query
 KNOWLEDGE_BASE=sparql_endpoint
-SELECTION=random
+SELECTION=random                   # random | relevance_feedback
 EXPORTER=json
 EXHIBITION_BUILDER=digital_wall
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
 METADATA_TEXTUAL_CLUSTERING_FIELDS=title         # used by SELECTION=metadata_textual_clustering
 METADATA_TEXTUAL_CLUSTERING_STEERING_WEIGHT=0.6
 METADATA_TEXTUAL_CLUSTERING_SHUFFLE_STEP=0.25
+REPRESENTATION=                    # embeddinggemma | blank = off
 ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json
 
 # Module settings (only the relevant ones are used)
@@ -462,6 +543,7 @@ REGISTRY = {
     "selection": {
         "random":                      "modules.selection.random_strategy.RandomStrategy",
         "metadata_textual_clustering": "modules.selection.metadata_textual_clustering.MetadataTextualClusteringStrategy",
+        "relevance_feedback":          "modules.selection.relevance_feedback.RelevanceFeedbackStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -472,10 +554,13 @@ REGISTRY = {
     "exhibition_builder": {
         "digital_wall": "modules.exhibition_builder.digital_wall.DigitalWall",
     },
+    "representation": {
+        "embeddinggemma": "modules.representation.embeddinggemma.EmbeddingGemmaEncoder",
+    },
 }
 ```
 
-Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator.
+Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator; `_build_representation` wraps the encoder in a `RepresentationService` with the shared ImageCache, and `_build_selection` injects that service into `relevance_feedback`.
 
 Adding a new implementation = add one registry entry + set the env var (plus a `_build_*` branch if it needs constructor args). No other files change.
 
@@ -603,17 +688,19 @@ Infrastructure behind `/thumb`. On the first request for an image URL it downloa
 
 ## Flask API (stateless server)
 
-**State lives entirely in the browser** (pool, history, current display). The server is a pure function: same inputs → same outputs.
+**State lives entirely in the browser** (pool, history, current display). The server is a pure function: same inputs → same outputs. The one exception is the optional Representation module's memory banks (§10), which only observe the pool and the selection and never change a response.
 
 | Method | Path | Request body | Response |
 |--------|------|-------------|----------|
 | `GET` | `/` | — | Serves `index.html` |
-| `POST` | `/search` | `{ query: str, n: int, exhibition_theme: str }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
+| `POST` | `/search` | `{ query: str, n: int, exhibition_theme: str, search_id?: str }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
 | `POST` | `/next` | `{ pool: [...], n: int, history: {...} }` | `{ displayed: [...], pool: [...] }` |
 | `POST` | `/export` | `{ items: [...], meta: {...} }` | JSON file download |
 | `POST` | `/exhibition` | form field `export` = JSON `{ items, meta }` | HTML page from the ExhibitionBuilder |
 | `POST` | `/exhibition/render` | multipart: `scene` (PNG), `description`, `variation` | Rendered PNG; `501` if the builder doesn't render, `500` with `{error}` on failure |
 | `POST` | `/api/chat` | `{ message: str, items: [...], exhibition_theme: str }` | `{ reply: str }`; `503` with `{ error }` when no model is configured or it cannot answer |
+| `POST` | `/selection` | `{ items: [...] }` — all kept items | Representation status, or `{enabled: false}` |
+| `GET` | `/representations/status` | — | `{enabled, views, search: {total, done, ready}, selection: {…}}` |
 | `GET` | `/thumb?url=…` | — | Cached JPEG thumbnail; `404` if the image is a placeholder, `403` if the host is not allowed, `502` if it can't be fetched |
 
 ---
@@ -645,7 +732,8 @@ museum_curation/
 │   │   ├── utils.py                     # unseen(), largest_remainder(), metadata_linearization()
 │   │   ├── clustering.py                # Clusterer ABC + KMeansClusterer
 │   │   ├── metadata_textual_clustering.py # cluster → one per cluster → steer to kept clusters
-│   │   └── random_strategy.py           # random.sample(unseen, n)
+│   │   ├── random_strategy.py           # random.sample(unseen, n)
+│   │   └── relevance_feedback.py        # re-ranks by feedback on the vectors (+ simulation CLI)
 │   ├── retrieval_evaluator/
 │   │   ├── _stub.py
 │   │   ├── base.py                      # FeatureEncoder, MetricsCalculator, SurpriseCalculator ABCs
@@ -654,6 +742,11 @@ museum_curation/
 │   │   ├── metrics_calculator.py        # diversity (pairwise embedding distance)
 │   │   ├── surprise_calculator.py       # surprise (items outside the searched concepts)
 │   │   └── diversity_recommender_design.md
+│   ├── representation/                  # optional: object embeddings + memory banks
+│   │   ├── base.py                      # ObjectEncoder ABC
+│   │   ├── _stub.py
+│   │   ├── embeddinggemma.py            # EmbeddingGemma 2 encoder (+ CLI)
+│   │   └── memory_bank.py               # MemoryBank, RepresentationService (background worker)
 │   ├── exporter/
 │   │   ├── _stub.py
 │   │   └── json_exporter.py
@@ -738,6 +831,7 @@ Switching to a different graph = create a new `collections/<graph>/` folder, poi
 - LLM- or embedding-based ConceptMatcher (interface ready, impl deferred)
 - Relaxed retrieval and MMR-style diversity-aware selection (see the diversity design doc)
 - Further feedback-driven SelectionStrategies (e.g. nearest neighbours of kept items, rejected-cluster down-weighting)
+- Using the query text as a ranking anchor, so the first batch of a query is ranked rather than random
 - Object validation
 - User accounts or persistent sessions
 - Docker / container deployment

@@ -34,6 +34,7 @@ REGISTRY = {
     "selection": {
         "random":                      "modules.selection.random_strategy.RandomStrategy",
         "metadata_textual_clustering": "modules.selection.metadata_textual_clustering.MetadataTextualClusteringStrategy",
+        "relevance_feedback":          "modules.selection.relevance_feedback.RelevanceFeedbackStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -47,6 +48,9 @@ REGISTRY = {
     },
     "exhibition_builder": {
         "digital_wall": "modules.exhibition_builder.digital_wall.DigitalWall",
+    },
+    "representation": {
+        "embeddinggemma": "modules.representation.embeddinggemma.EmbeddingGemmaEncoder",
     },
 }
 
@@ -92,8 +96,25 @@ def _build_knowledge_base(key: str):
     return cls()
 
 
-def _build_selection(key: str):
+def rerank_kwargs() -> dict:
+    """RelevanceFeedbackStrategy settings from the RERANK_* env vars."""
+    return {
+        "view":        os.getenv("RERANK_VIEW", "fused").strip() or "fused",
+        "scoring":     os.getenv("RERANK_SCORING", "rocchio").strip() or "rocchio",
+        "beta":        float(os.getenv("RERANK_BETA", "1.0")),
+        "gamma":       float(os.getenv("RERANK_GAMMA", "0.5")),
+        "k":           int(os.getenv("RERANK_K", "3")),
+        "mmr_lambda":  float(os.getenv("RERANK_MMR_LAMBDA", "0.7")),
+        "explore":     float(os.getenv("RERANK_EXPLORE", "0.2")),
+        "wait":        float(os.getenv("RERANK_WAIT", "1.0")),
+        "cross_query": os.getenv("RERANK_CROSS_QUERY", "true").strip().lower() != "false",
+    }
+
+
+def _build_selection(key: str, representation=None):
     cls = _load_class("selection", key)
+    if key == "relevance_feedback":
+        return cls(representation=representation, **rerank_kwargs())
     if key == "metadata_textual_clustering":
         from modules.embedding import DEFAULT_MODEL, TextEmbedder
         from modules.selection.clustering import KMeansClusterer
@@ -187,6 +208,35 @@ def _build_curation_assistant(chat_key: str):
     )
 
 
+def _build_representation(key: str, image_cache):
+    # Imports are inside the function so the embedding model is not loaded
+    # unless REPRESENTATION is explicitly set in .env.
+    from modules.representation.memory_bank import RepresentationService
+    if key == "embeddinggemma":
+        from modules.representation.embeddinggemma import build_from_env
+        encoder = build_from_env()
+    else:
+        encoder = _load_class("representation", key)()
+    return RepresentationService(
+        encoder,
+        image_cache,
+        batch_size=int(os.getenv("REPRESENTATION_BATCH_SIZE", "8")),
+        cache_size=int(os.getenv("REPRESENTATION_CACHE_SIZE", "5000")),
+    )
+
+
+def build_preloader(modules: dict, build_pool):
+    """Preloader for the demo queries in PRELOAD_QUERIES, or None when unset."""
+    path = os.getenv("PRELOAD_QUERIES", "").strip()
+    if not path:
+        return None
+    import json
+    import pathlib
+    from modules.preload import Preloader
+    queries = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    return Preloader(queries, modules, modules["pool_cache"], build_pool)
+
+
 def build_modules() -> dict:
     qg_key  = os.getenv("QUERY_GENERATION", "concept_query")
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
@@ -195,6 +245,7 @@ def build_modules() -> dict:
     eb_key  = os.getenv("EXHIBITION_BUILDER", "digital_wall")
     re_key  = os.getenv("RETRIEVAL_EVALUATOR", "").strip()
     chat_key = os.getenv("CHAT_MODEL", "local_hf").strip()
+    rep_key  = os.getenv("REPRESENTATION", "").strip()
 
     knowledge_base = _build_knowledge_base(kb_key)
     modules = {
@@ -202,13 +253,19 @@ def build_modules() -> dict:
         "knowledge_base":       knowledge_base,
         "artifact_fetcher":     _build_artifact_fetcher(knowledge_base),
         "image_cache":          _build_image_cache(),
-        "selection":            _build_selection(sel_key),
         "exporter":             _build_exporter(exp_key),
         "exhibition_builder":   _build_exhibition_builder(eb_key),
         "logger":               _build_logger(),
     }
+    if os.getenv("PRELOAD_QUERIES", "").strip():
+        from modules.preload import PoolCache
+        modules["pool_cache"] = PoolCache(os.getenv("POOL_CACHE_DIR", ".cache/pools"))
     if re_key:
         modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)
+    if rep_key:
+        modules["representation"] = _build_representation(rep_key, modules["image_cache"])
+    # After the representation: a re-ranking strategy gets it injected.
+    modules["selection"] = _build_selection(sel_key, modules.get("representation"))
     if chat_key:
         modules["curation_assistant"] = _build_curation_assistant(chat_key)
         modules["chat_model_key"]     = chat_key

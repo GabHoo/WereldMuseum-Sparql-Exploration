@@ -30,8 +30,8 @@ class MySelectionStrategy(SelectionStrategy):
                   properties is the Artifact dict (modules/artifact.py)
         n       : number of items to return
         history : SelectionHistory with
-                    accepted   ids the user kept so far in this search
-                    rejected   ids shown but not kept
+                    accepted   ids the user kept so far
+                    rejected   ids the user explicitly marked not relevant
                     seen       every id shown so far (never return these)
 
         Return up to n items from unseen(pool, history).
