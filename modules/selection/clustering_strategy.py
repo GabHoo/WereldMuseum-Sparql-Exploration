@@ -1,17 +1,21 @@
 """
-MetadataTextualClusteringStrategy — cluster the pool, show one of each, then steer
-towards the clusters the user keeps from, while always keeping some exploration.
+ClusteringStrategy — cluster the pool, show one of each, then steer towards
+the clusters the user keeps from, while always keeping some exploration.
+
+Works on the vectors of the Embedding module (EMBEDDING=metadata_text |
+multimodal), in the EMBEDDING_VIEW space; config.py injects the service.
 
 prepare(pool)   once per search
-    1. Linearize each item's metadata into one text (metadata_linearization),
-       from the configured Artifact fields (default: the title).
-    2. Embed the texts (shared TextEmbedder) and cluster them (Clusterer),
-       aiming for `n_clusters` clusters (default: twice the batch size, so
-       clusters remain unshown after the first batch).
-    3. Store on each item:  item["selection"] = {"cluster": "<search-id>:<k>",
-                                                "cluster_label": <most common text>}
-       The search id prefix keeps clusters of different searches apart when the
-       browser merges pools (multi-category search). Vectors are not stored.
+    1. Wait up to `wait` seconds for the pool's vectors (app.py has queued
+       them). metadata_text is ready in about a second; multimodal takes ~30 s.
+    2. If every item has a vector: cluster them (Clusterer), aiming for
+       `n_clusters` clusters (default: twice the batch size, so clusters remain
+       unshown after the first batch), and store on each item:
+           item["selection"] = {"cluster": <k>, "cluster_label": <most common title>}
+       Vectors are not stored on the items.
+    Otherwise the pool stays unclustered: batches are random until a later
+    select() finds every vector ready and clusters then. The annotations travel
+    with the pool, so this happens once per search.
 
 select(pool, n, history)   every batch
     r        = min(1, shuffle_step · empty_streak) — grows with every batch in a
@@ -30,68 +34,89 @@ steering_weight 0 → never steer; 1 → only the kept clusters (exploration sti
 fills in when those clusters run out). shuffle_step 0 → empty batches change
 nothing; 0.25 → after 4 empty batches in a row everything is random.
 """
-import hashlib
+import logging
 import random
 from collections import Counter, defaultdict
-from typing import Callable
 
 from modules.base import SelectionHistory, SelectionStrategy
-from modules.embedding import TextEmbedder
 from modules.selection.clustering import Clusterer
-from modules.selection.utils import empty_streak, largest_remainder, metadata_linearization, unseen
+from modules.selection.utils import empty_streak, largest_remainder, unseen
+
+log = logging.getLogger(__name__)
 
 _UNTITLED = "(untitled)"
 
 
-class MetadataTextualClusteringStrategy(SelectionStrategy):
+class ClusteringStrategy(SelectionStrategy):
     def __init__(
         self,
-        embedder: TextEmbedder,
+        embedding,
         clusterer: Clusterer,
-        linearize: Callable[[dict], str] | None = None,
+        view: str = "text",
         n_clusters: int = 18,
         steering_weight: float = 0.6,
         shuffle_step: float = 0.25,
+        wait: float = 3.0,
         seed: int | None = None,
     ):
         if not 0.0 <= steering_weight <= 1.0:
             raise ValueError(f"steering_weight must be in [0, 1], got {steering_weight}")
         if not 0.0 <= shuffle_step <= 1.0:
             raise ValueError(f"shuffle_step must be in [0, 1], got {shuffle_step}")
-        self._embedder  = embedder
+        if embedding is None:
+            log.warning("SELECTION=clustering needs EMBEDDING; selecting at random")
+        elif view not in embedding.encoder.views:
+            raise ValueError(f"EMBEDDING_VIEW={view!r} is not computed by this embedding "
+                             f"{list(embedding.encoder.views)}")
+        self._embedding = embedding
         self._clusterer = clusterer
-        self._linearize = linearize or metadata_linearization("title")
+        self._view      = view
         self._k         = n_clusters
         self._w         = steering_weight
         self._step      = shuffle_step
+        self._wait      = wait
         self._rng       = random.Random(seed)
+        self.last_debug: dict = {}   # what the last select() did, for the run log
 
     # ── Per search ───────────────────────────────────────────────────────────
 
     def prepare(self, pool: list) -> None:
-        if not pool:
+        if not pool or self._embedding is None:
             return
-        texts  = [self._linearize(item) or _UNTITLED for item in pool]
-        labels = self._clusterer.fit(self._embedder.embed(texts), self._k)
+        self._embedding.wait([item["id"] for item in pool], self._wait)
+        self._cluster(pool)
 
-        search_id = hashlib.sha1("".join(sorted(i["id"] for i in pool)).encode()).hexdigest()[:6]
-        texts_by_label: dict[int, list[str]] = defaultdict(list)
-        for text, label in zip(texts, labels):
-            texts_by_label[label].append(text)
-        names = {label: Counter(ts).most_common(1)[0][0] for label, ts in texts_by_label.items()}
+    def _cluster(self, pool: list) -> bool:
+        """Annotate the items with clusters if every one has a vector; else False."""
+        ids, vectors = self._embedding.matrix([item["id"] for item in pool], self._view)
+        if len(ids) < len(pool):
+            return False
+        labels = self._clusterer.fit(vectors, self._k)
+
+        titles_by_label: dict[int, list[str]] = defaultdict(list)
+        for item, label in zip(pool, labels):
+            titles_by_label[label].append(item.get("title") or _UNTITLED)
+        names = {label: Counter(ts).most_common(1)[0][0] for label, ts in titles_by_label.items()}
 
         for item, label in zip(pool, labels):
             item["selection"] = {
                 **item.get("selection", {}),
-                "cluster":       f"{search_id}:{label}",
+                "cluster":       int(label),
                 "cluster_label": names[label],
             }
+        return True
 
     # ── Per batch ────────────────────────────────────────────────────────────
 
     def select(self, pool: list, n: int, history: SelectionHistory) -> list:
-        if any("cluster" not in item.get("selection", {}) for item in pool):
-            self.prepare(pool)  # e.g. a pool built before this strategy was enabled
+        clustered = all("cluster" in item.get("selection", {}) for item in pool)
+        if not clustered and not (self._embedding and self._cluster(pool)):
+            # Vectors not ready yet (or no embedding): random, like a first batch.
+            self.last_debug = {"mode": "random",
+                               "reason": "pool not encoded yet" if self._embedding else "no embedding"}
+            cands = unseen(pool, history)
+            return self._rng.sample(cands, min(n, len(cands)))
+        self.last_debug = {"mode": "clustering", "clusters": len({i["selection"]["cluster"] for i in pool})}
 
         cluster_of = {item["id"]: item["selection"]["cluster"] for item in pool}
         by_cluster: dict[str, list] = defaultdict(list)

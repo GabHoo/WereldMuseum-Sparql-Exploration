@@ -1,16 +1,17 @@
 """
-Interface for object encoders used by the Representation module.
+Interface for the object encoders of the Embedding module (EMBEDDING=<key>).
 
 An ObjectEncoder turns collection objects (metadata text + a local image file)
 into vectors, one per *view*:
     fused — text and image in one multimodal input
     image — the image alone
     text  — the metadata text alone
-Which views are computed is configured (REPRESENTATION_VIEWS); every vector is
-L2-normalised, so cosine similarity is a dot product.
+Each encoder computes the views it supports (a text-only encoder: just "text");
+every vector is L2-normalised, so cosine similarity is a dot product.
 
-RepresentationService (memory_bank.py) calls the encoder from a background
-thread and keeps the vectors in two memory banks (search results / selection).
+EmbeddingService (service.py) calls the encoder from a background thread and
+caches the vectors per object id; embedding-based selection strategies read
+them from there.
 """
 from abc import ABC, abstractmethod
 
@@ -34,3 +35,8 @@ class ObjectEncoder(ABC):
         Override to change which fields are used or how they are formatted.
         """
         return properties.get("title") or ""
+
+    @property
+    def needs_images(self) -> bool:
+        """Whether encode() uses image_path; if not, no thumbnails are fetched."""
+        return any(view in ("fused", "image") for view in self.views)

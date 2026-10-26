@@ -18,7 +18,7 @@ Model: paraphrase-multilingual-mpnet-base-v2
   paraphrase-multilingual-MiniLM-L12-v2  (384-dim, ~2× faster)
 """
 import numpy as np
-from modules.embedding import load_sentence_model
+from modules.embedding.sentence_model import load_sentence_model
 
 from modules.retrieval_evaluator.base import FeatureEncoder
 

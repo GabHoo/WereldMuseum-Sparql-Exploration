@@ -1,42 +1,36 @@
 """
-Tests for RelevanceFeedbackStrategy on synthetic vectors (no model needed).
+Tests for RerankStrategy on synthetic vectors (no model needed).
 
-Run: python -m pytest tests/  or  python -m tests.test_relevance_feedback
+Run: python -m pytest tests/  or  python -m tests.test_rerank_strategy
 """
 import random
 
 import numpy as np
 
 from modules.base import SelectionHistory
-from modules.representation.memory_bank import MemoryBank
-from modules.selection.relevance_feedback import (
-    RelevanceFeedbackStrategy, _mmr, _score_knn, _score_rocchio,
-)
+from modules.selection.rerank_strategy import RerankStrategy, _mmr, _score_knn, _score_rocchio
 
 DIM = 16
 
 
-class FakeRepresentation:
-    """The parts of RepresentationService the strategy uses, over fixed vectors."""
+class FakeEmbedding:
+    """The parts of EmbeddingService the strategy uses, over fixed vectors (None = not encoded yet)."""
 
     def __init__(self, vectors: dict, view: str = "fused"):
         self.encoder = type("Encoder", (), {"views": (view,)})()
-        self.search_bank = MemoryBank()
-        self.selection_bank = MemoryBank()
-        self._view = view
-        self.search_bank.add([{"id": i} for i in vectors],
-                             {i: ({view: v} if v is not None else None) for i, v in vectors.items()})
-
-    def keep(self, ids):
-        self.selection_bank.add([{"id": i} for i in ids],
-                                {i: self.search_bank.get(i)["vectors"] for i in ids})
+        self._vectors = vectors
 
     def vector(self, item_id, view):
-        for bank in (self.search_bank, self.selection_bank):
-            entry = bank.get(item_id)
-            if entry and entry["vectors"] and view in entry["vectors"]:
-                return entry["vectors"][view]
-        return None
+        return self._vectors.get(item_id)
+
+    def matrix(self, ids, view):
+        found = [i for i in ids if self._vectors.get(i) is not None]
+        if not found:
+            return [], np.zeros((0, 0), dtype=np.float32)
+        return found, np.stack([self._vectors[i] for i in found])
+
+    def wait(self, ids, timeout=None):
+        return True
 
 
 def _clusters(sizes: dict, seed: int = 0) -> dict:
@@ -53,7 +47,7 @@ def _clusters(sizes: dict, seed: int = 0) -> dict:
 
 def _strategy(rep, **kw):
     kw = {"explore": 0.0, "wait": 0.0, "rng": random.Random(0), **kw}
-    return RelevanceFeedbackStrategy(rep, **kw)
+    return RerankStrategy(rep, **kw)
 
 
 def _pool(vectors):
@@ -104,7 +98,7 @@ def test_mmr_spreads_over_clusters():
 
 def test_feedback_steers_next_batch():
     vecs = _clusters({"a": 20, "b": 20})
-    rep = FakeRepresentation(vecs)
+    rep = FakeEmbedding(vecs)
     pool = _pool(vecs)
     history = SelectionHistory(accepted=["a0"], rejected=["b0"], seen=["a0", "b0"])
     batch = _strategy(rep, mmr_lambda=1.0).select(pool, 10, history)
@@ -115,34 +109,33 @@ def test_feedback_steers_next_batch():
 
 def test_exploration_takes_its_share():
     vecs = _clusters({"a": 20, "b": 20})
-    strategy = _strategy(FakeRepresentation(vecs), explore=0.2)
+    strategy = _strategy(FakeEmbedding(vecs), explore=0.2)
     batch = strategy.select(_pool(vecs), 10, SelectionHistory(accepted=["a0"], seen=["a0"]))
     assert len(batch) == 10
     assert len(strategy.last_debug["explored_ids"]) == 2
     assert len(strategy.last_debug["ranked_ids"]) == 8
 
 
-def test_selection_bank_counts_as_positive():
+def test_kept_under_earlier_query_counts_as_positive():
     vecs = _clusters({"a": 20, "b": 20})
-    rep = FakeRepresentation(vecs)
-    rep.keep(["b0"])
-    batch = _strategy(rep, mmr_lambda=1.0).select(_pool(vecs), 5, SelectionHistory(seen=["b0"]))
+    rep = FakeEmbedding(vecs)
+    # b0 was kept under an earlier query: the browser sends it in accepted
+    batch = _strategy(rep, mmr_lambda=1.0).select(_pool(vecs), 5, SelectionHistory(accepted=["b0"], seen=["b0"]))
     assert all(item["id"].startswith("b") for item in batch)
 
 
 def test_cross_query_off_ignores_kept_outside_pool():
     vecs = _clusters({"a": 10, "b": 10})
-    rep = FakeRepresentation(vecs)
-    rep.keep(["b0"])
+    rep = FakeEmbedding(vecs)
     pool = [p for p in _pool(vecs) if p["id"] != "b0"]   # b0 came from an earlier query
     strategy = _strategy(rep, cross_query=False)
-    strategy.select(pool, 5, SelectionHistory())
+    strategy.select(pool, 5, SelectionHistory(accepted=["b0"]))
     assert strategy.last_debug["mode"] == "random"
 
 
 def test_negatives_are_never_shown():
     vecs = _clusters({"a": 10, "b": 10})
-    rep = FakeRepresentation(vecs)
+    rep = FakeEmbedding(vecs)
     # b1..b3 were marked not relevant under an earlier query, so never seen here
     history = SelectionHistory(accepted=["a0"], rejected=["b1", "b2", "b3"], seen=["a0"])
     batch = _strategy(rep, explore=1.0).select(_pool(vecs), 19, history)
@@ -152,7 +145,7 @@ def test_negatives_are_never_shown():
 
 def test_cross_query_off_ignores_negatives_outside_pool():
     vecs = _clusters({"a": 10, "b": 10})
-    rep = FakeRepresentation(vecs)
+    rep = FakeEmbedding(vecs)
     pool = [p for p in _pool(vecs) if p["id"] != "b0"]   # b0 came from an earlier query
     history = SelectionHistory(rejected=["b0"])
     on = _strategy(rep)
@@ -165,10 +158,9 @@ def test_cross_query_off_ignores_negatives_outside_pool():
 
 def test_positive_wins_over_negative():
     vecs = _clusters({"a": 10, "b": 10})
-    rep = FakeRepresentation(vecs)
-    rep.keep(["a0"])
+    rep = FakeEmbedding(vecs)
     strategy = _strategy(rep)
-    strategy.select(_pool(vecs), 5, SelectionHistory(rejected=["a0", "b0"], seen=["a0"]))
+    strategy.select(_pool(vecs), 5, SelectionHistory(accepted=["a0"], rejected=["a0", "b0"], seen=["a0"]))
     assert strategy.last_debug["n_pos"] == 1
     assert strategy.last_debug["n_neg"] == 1
 
@@ -176,7 +168,7 @@ def test_positive_wins_over_negative():
 def test_unencoded_candidates_are_explored():
     vecs = _clusters({"a": 10})
     vecs.update({f"x{i}": None for i in range(10)})   # still queued for encoding
-    strategy = _strategy(FakeRepresentation(vecs))
+    strategy = _strategy(FakeEmbedding(vecs))
     hist = SelectionHistory(accepted=["a0"], seen=["a0"])
     batch = strategy.select(_pool(vecs), 15, hist)
     assert len(batch) == 15
@@ -187,9 +179,9 @@ def test_unencoded_candidates_are_explored():
 def test_fallbacks_are_random():
     vecs = _clusters({"a": 10})
     pool = _pool(vecs)
-    no_rep = RelevanceFeedbackStrategy(None, rng=random.Random(0))
+    no_rep = RerankStrategy(None, rng=random.Random(0))
     assert len(no_rep.select(pool, 5, SelectionHistory(seen=["a0"]))) == 5
-    no_feedback = _strategy(FakeRepresentation(vecs))
+    no_feedback = _strategy(FakeEmbedding(vecs))
     batch = no_feedback.select(pool, 5, SelectionHistory())
     assert len(batch) == 5 and no_feedback.last_debug["mode"] == "random"
 
@@ -197,7 +189,7 @@ def test_fallbacks_are_random():
 def test_scores_are_written_to_items():
     vecs = _clusters({"a": 5, "b": 5})
     pool = _pool(vecs)
-    _strategy(FakeRepresentation(vecs)).select(pool, 3, SelectionHistory(accepted=["a0"], seen=["a0"]))
+    _strategy(FakeEmbedding(vecs)).select(pool, 3, SelectionHistory(accepted=["a0"], seen=["a0"]))
     scores = {p["id"]: p["score"] for p in pool}
     assert scores["a1"] > scores["b1"]
 

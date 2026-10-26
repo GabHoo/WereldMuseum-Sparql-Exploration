@@ -12,8 +12,9 @@ class MySelectionStrategy(SelectionStrategy):
     Reusable pieces:
       modules/selection/utils.py       unseen(), largest_remainder(), metadata_linearization()
       modules/selection/clustering.py  Clusterer / KMeansClusterer
-      modules/embedding.py             TextEmbedder (shared embedding model)
-    See metadata_textual_clustering.py for a complete example.
+      modules/embedding/service.py     EmbeddingService: object vectors (injected by
+                                       config.py, as for clustering and rerank)
+    See clustering_strategy.py or rerank_strategy.py for complete examples.
     """
 
     def prepare(self, pool: list) -> None:

@@ -32,9 +32,9 @@ REGISTRY = {
         "rdf_file":        "modules.knowledge_base.rdf_file.RDFFile",
     },
     "selection": {
-        "random":                      "modules.selection.random_strategy.RandomStrategy",
-        "metadata_textual_clustering": "modules.selection.metadata_textual_clustering.MetadataTextualClusteringStrategy",
-        "relevance_feedback":          "modules.selection.relevance_feedback.RelevanceFeedbackStrategy",
+        "random":     "modules.selection.random_strategy.RandomStrategy",
+        "clustering": "modules.selection.clustering_strategy.ClusteringStrategy",
+        "rerank":     "modules.selection.rerank_strategy.RerankStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -49,8 +49,9 @@ REGISTRY = {
     "exhibition_builder": {
         "digital_wall": "modules.exhibition_builder.digital_wall.DigitalWall",
     },
-    "representation": {
-        "embeddinggemma": "modules.representation.embeddinggemma.EmbeddingGemmaEncoder",
+    "embedding": {
+        "metadata_text": "modules.embedding.metadata_text.MetadataTextEncoder",
+        "multimodal":    "modules.embedding.multimodal.MultimodalEncoder",
     },
 }
 
@@ -97,9 +98,8 @@ def _build_knowledge_base(key: str):
 
 
 def rerank_kwargs() -> dict:
-    """RelevanceFeedbackStrategy settings from the RERANK_* env vars."""
+    """RerankStrategy settings from the RERANK_* env vars."""
     return {
-        "view":        os.getenv("RERANK_VIEW", "fused").strip() or "fused",
         "scoring":     os.getenv("RERANK_SCORING", "rocchio").strip() or "rocchio",
         "beta":        float(os.getenv("RERANK_BETA", "1.0")),
         "gamma":       float(os.getenv("RERANK_GAMMA", "0.5")),
@@ -111,22 +111,23 @@ def rerank_kwargs() -> dict:
     }
 
 
-def _build_selection(key: str, representation=None):
+def _build_selection(key: str, embedding=None, embedding_key: str = ""):
+    # Embedding-based strategies get the EmbeddingService (None when EMBEDDING
+    # is unset: they then select at random) and the view to work in.
     cls = _load_class("selection", key)
-    if key == "relevance_feedback":
-        return cls(representation=representation, **rerank_kwargs())
-    if key == "metadata_textual_clustering":
-        from modules.embedding import DEFAULT_MODEL, TextEmbedder
+    if key == "clustering":
         from modules.selection.clustering import KMeansClusterer
-        from modules.selection.utils import metadata_linearization
         return cls(
-            embedder=TextEmbedder(os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL)),
+            embedding=embedding,
             clusterer=KMeansClusterer(),
-            linearize=metadata_linearization(os.getenv("METADATA_TEXTUAL_CLUSTERING_FIELDS", "title")),
-            n_clusters=int(os.getenv("METADATA_TEXTUAL_CLUSTERING_N_CLUSTERS", str(2 * N_PER_BATCH))),
-            steering_weight=float(os.getenv("METADATA_TEXTUAL_CLUSTERING_STEERING_WEIGHT", "0.6")),
-            shuffle_step=float(os.getenv("METADATA_TEXTUAL_CLUSTERING_SHUFFLE_STEP", "0.25")),
+            view=embedding_view(embedding_key),
+            n_clusters=int(os.getenv("CLUSTERING_N_CLUSTERS", str(2 * N_PER_BATCH))),
+            steering_weight=float(os.getenv("CLUSTERING_STEERING_WEIGHT", "0.6")),
+            shuffle_step=float(os.getenv("CLUSTERING_SHUFFLE_STEP", "0.25")),
+            wait=float(os.getenv("CLUSTERING_WAIT", "3")),
         )
+    if key == "rerank":
+        return cls(embedding=embedding, view=embedding_view(embedding_key), **rerank_kwargs())
     return cls()
 
 
@@ -208,20 +209,44 @@ def _build_curation_assistant(chat_key: str):
     )
 
 
-def _build_representation(key: str, image_cache):
-    # Imports are inside the function so the embedding model is not loaded
-    # unless REPRESENTATION is explicitly set in .env.
-    from modules.representation.memory_bank import RepresentationService
-    if key == "embeddinggemma":
-        from modules.representation.embeddinggemma import build_from_env
-        encoder = build_from_env()
-    else:
-        encoder = _load_class("representation", key)()
-    return RepresentationService(
-        encoder,
-        image_cache,
-        batch_size=int(os.getenv("REPRESENTATION_BATCH_SIZE", "8")),
-        cache_size=int(os.getenv("REPRESENTATION_CACHE_SIZE", "5000")),
+def embedding_view(key: str) -> str:
+    """EMBEDDING_VIEW, or the embedding's own default (multimodal: fused, else text)."""
+    return os.getenv("EMBEDDING_VIEW", "").strip() or ("fused" if key == "multimodal" else "text")
+
+
+def _build_encoder(key: str):
+    cls = _load_class("embedding", key)
+    if key == "metadata_text":
+        from modules.embedding.sentence_model import DEFAULT_MODEL
+        return cls(
+            model_name=os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL),
+            fields=os.getenv("EMBEDDING_TEXT_FIELDS", "title"),
+        )
+    if key == "multimodal":
+        from modules.embedding.multimodal import DEFAULT_MODEL
+        dim = os.getenv("EMBEDDING_DIM", "").strip()
+        image_tokens = os.getenv("EMBEDDING_IMAGE_TOKENS", "").strip()
+        return cls(
+            model_name=os.getenv("EMBEDDING_MULTIMODAL_MODEL", DEFAULT_MODEL),
+            views=(embedding_view(key),),
+            dim=int(dim) if dim else None,
+            device=os.getenv("EMBEDDING_DEVICE", "").strip() or None,
+            dtype=os.getenv("EMBEDDING_DTYPE", "auto").strip() or "auto",
+            batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "8")),
+            image_tokens=int(image_tokens) if image_tokens else None,
+        )
+    return cls()
+
+
+def build_embedding(key: str, image_cache=None):
+    """EmbeddingService around the encoder for key. Imports happen here, so no
+    embedding model is loaded unless EMBEDDING is set."""
+    from modules.embedding.service import EmbeddingService
+    return EmbeddingService(
+        _build_encoder(key),
+        image_cache or _build_image_cache(),
+        batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "8")),
+        cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "5000")),
     )
 
 
@@ -245,7 +270,7 @@ def build_modules() -> dict:
     eb_key  = os.getenv("EXHIBITION_BUILDER", "digital_wall")
     re_key  = os.getenv("RETRIEVAL_EVALUATOR", "").strip()
     chat_key = os.getenv("CHAT_MODEL", "local_hf").strip()
-    rep_key  = os.getenv("REPRESENTATION", "").strip()
+    emb_key  = os.getenv("EMBEDDING", "").strip()
 
     knowledge_base = _build_knowledge_base(kb_key)
     modules = {
@@ -262,10 +287,10 @@ def build_modules() -> dict:
         modules["pool_cache"] = PoolCache(os.getenv("POOL_CACHE_DIR", ".cache/pools"))
     if re_key:
         modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)
-    if rep_key:
-        modules["representation"] = _build_representation(rep_key, modules["image_cache"])
-    # After the representation: a re-ranking strategy gets it injected.
-    modules["selection"] = _build_selection(sel_key, modules.get("representation"))
+    if emb_key:
+        modules["embedding"] = build_embedding(emb_key, modules["image_cache"])
+    # After the embedding: embedding-based strategies get it injected.
+    modules["selection"] = _build_selection(sel_key, modules.get("embedding"), emb_key)
     if chat_key:
         modules["curation_assistant"] = _build_curation_assistant(chat_key)
         modules["chat_model_key"]     = chat_key

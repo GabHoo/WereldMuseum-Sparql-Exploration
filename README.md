@@ -29,12 +29,12 @@ All module selection is done via `.env`. Copy `.env.example` to `.env` and set:
 QUERY_GENERATION=concept_query    # concept_query
 CONCEPT_MATCHER=thesaurus         # thesaurus (used by concept_query)
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
-SELECTION=random                  # random | metadata_textual_clustering | relevance_feedback
+SELECTION=random                  # random | clustering | rerank (clustering and rerank need EMBEDDING)
 EXPORTER=json                     # json
 EXHIBITION_BUILDER=digital_wall   # digital_wall
 RETRIEVAL_EVALUATOR=              # diversity | blank = off
 CHAT_MODEL=local_hf               # local_hf | nebula | blank = off (curation assistant)
-REPRESENTATION=                   # embeddinggemma | blank = off
+EMBEDDING=                        # metadata_text | multimodal | blank = off (vectors for clustering / rerank)
 ```
 
 ### Search results
@@ -92,13 +92,22 @@ The curation assistant (chat box under the selection) answers questions about th
 |-----|-------------|
 | `digital_wall` | Wall editor: drag the selected objects onto a gallery wall, draw, add text and props. *Done → Generate* turns the scene into photorealistic exhibition renders via the OpenAI image-edit API (needs `OPENAI_API_KEY`; `DIGITAL_WALL_IMAGE_MODEL`, default `gpt-image-2`). |
 
-### Representation
+### Selection and embedding
 
-`REPRESENTATION=embeddinggemma` embeds every search result (image + metadata) with [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) in the background and keeps the vectors in memory: a *search bank* that is replaced on each new query, and a *selection bank* of kept objects that persists. `REPRESENTATION_VIEWS` picks the vectors per object (`fused` by default; also `image`, `text`). Progress: `GET /representations/status`. See DESIGN.md §10.
+Two independent choices. `SELECTION` decides which objects each batch shows — it is where the curator's feedback turns into recommendations. `EMBEDDING` decides how objects become vectors for the strategies that work on vectors. Every embedding-based strategy works with every embedding:
 
-### Selection
+| `SELECTION` | How it works |
+|-------------|-------------|
+| `random` | Unseen objects at random; ignores feedback |
+| `clustering` | Clusters the pool on its vectors, shows one object per cluster first, then steers towards the clusters you keep from. Settings: `CLUSTERING_*` |
+| `rerank` | Relevance feedback: re-ranks each new batch — kept objects pull similar ones up, objects marked not relevant (the × that appears on a pool card under the mouse; listed under the selection panel's Negatives tab) push them down and are not shown again, and 2 of 10 objects are still picked at random. Settings: `RERANK_*`. Compare it with random selection offline: `python -m modules.selection.rerank_strategy <pool or runs.log> --target <concept URI>` |
 
-`SELECTION=relevance_feedback` (needs `REPRESENTATION`) re-ranks each new batch from the curator's feedback: kept objects pull similar ones up, objects marked not relevant (the × that appears on a pool card under the mouse; listed under the selection panel's Negatives tab) push them down and are not shown again, and 2 of 10 objects are still picked at random. Settings are the `RERANK_*` variables in `.env.example`. Compare it with random selection offline with `python -m modules.selection.relevance_feedback <pool or runs.log> --target <concept URI>`. See DESIGN.md §4.
+| `EMBEDDING` | Vectors from | Speed |
+|-------------|-------------|-------|
+| `metadata_text` | the Artifact fields in `EMBEDDING_TEXT_FIELDS` as one line of text (multilingual sentence-transformer, `EMBEDDING_MODEL`) | ~1 s per 100 objects |
+| `multimodal` | image + metadata with [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) (1.5 GB, needs `transformers` 5.19+); `EMBEDDING_VIEW` = `fused` (default), `image` or `text` | ~30 s per 100 objects |
+
+Vectors are computed in the background and cached per object. The first batch of a search is random for `rerank` (no feedback yet), and for `clustering` when the vectors are not ready within `CLUSTERING_WAIT` seconds (multimodal); clustering then starts as soon as they are. The server keeps nothing per curator — the browser sends the pool, kept items and negatives with every request — so several tabs work side by side. Progress: `GET /embedding/status`. See DESIGN.md §4.
 
 ---
 
@@ -124,10 +133,9 @@ modules/
   query_generation/ Query generation implementations
   concept_matching/ Text → concept URI matchers used by concept_query
   knowledge_base/   SPARQL execution backends
-  selection/        Item selection strategies (random, metadata_textual_clustering) + shared helpers
-  embedding.py      Shared text-embedding model
+  selection/        Selection strategies (random, clustering, rerank) + shared helpers
+  embedding/        Object embeddings for selection (metadata_text, multimodal) + EmbeddingService
   retrieval_evaluator/ Optional pool diversity / surprise metrics
-  representation/   Optional object embeddings + memory banks (EmbeddingGemma 2)
   exporter/         Export formats
   chat_model/       Chat models for the curation assistant (local_hf, nebula)
   curation_assistant.py  Chat prompt + selection context sent to the chat model
@@ -137,7 +145,7 @@ templates/
   digital_wall.html Wall editor page (DigitalWall)
 static/
   digital_wall/     Wall editor script, styles and prop images
-tests/              Unit tests (python -m tests.test_relevance_feedback)
+tests/              Unit tests, no model needed (python -m tests.test_rerank_strategy, …)
 .env.example        Documents all environment variables
 DESIGN.md           Full architecture and module specifications
 ```

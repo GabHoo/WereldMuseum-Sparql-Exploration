@@ -9,7 +9,7 @@ thread:
     2. download each artifact's first thumbnail (ImageCache, on disk);
     3. score the pool with the RetrievalEvaluator, if any, to warm its
        in-memory caches (otherwise the first /search pays ~10 s);
-    4. queue the pool for encoding into the Representation vector cache
+    4. queue the pool for encoding into the Embedding module's vector cache
        (in memory, lowest priority: live searches go first).
 
 The pool cache is keyed by the generated SPARQL, so any wording that yields
@@ -104,9 +104,9 @@ class Preloader:
         evaluator = self._modules.get("retrieval_evaluator")
         if evaluator and pool:
             evaluator.score(pool, self._modules["query_generation"].get_query_features(query))
-        representation = self._modules.get("representation")
-        if representation:
-            representation.preload(pool)
+        embedding = self._modules.get("embedding")
+        if embedding:
+            embedding.preload(pool)
         return pool
 
     @staticmethod

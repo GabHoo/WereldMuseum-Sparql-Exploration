@@ -1,14 +1,16 @@
 # Plan: relevance-feedback re-ranking of batches
 
+> Design notes written before the strategy was built. Since then it is `SELECTION=rerank` (`RerankStrategy` in [rerank_strategy.py](rerank_strategy.py)), the Representation module became the Embedding module ([modules/embedding/](../embedding/), `EMBEDDING=metadata_text | multimodal`), and the server-side search/selection banks were replaced by the browser sending the pool, the kept items and the negatives with every `/next`. The implemented behaviour is documented in [DESIGN.md](../../DESIGN.md) §4.
+
 ## Context
-The UI shows the pool in batches of `N_PER_BATCH` (10). When the curator presses **Next** at the frontier, `nextBatch()` in [templates/index.html](templates/index.html) sends `/next` the full pool plus a `SelectionHistory`:
+The UI shows the pool in batches of `N_PER_BATCH` (10). When the curator presses **Next** at the frontier, `nextBatch()` in [templates/index.html](../../templates/index.html) sends `/next` the full pool plus a `SelectionHistory`:
 - `accepted`: the items in the batch the curator kept
 - `rejected`: the items in the batch the curator did not keep, plus items removed from the selection
 - `seen`: everything shown so far
 
-`RandomStrategy` ignores this feedback. The goal is a `SelectionStrategy` that re-ranks the unseen part of the pool after every batch, using the embeddings in the representation banks ([modules/representation/memory_bank.py](modules/representation/memory_bank.py)), so the feedback on batch *k* shapes batch *k+1*. Feedback accumulates over the whole query.
+`RandomStrategy` ignores this feedback. The goal is a `SelectionStrategy` that re-ranks the unseen part of the pool after every batch, using the embeddings in the representation banks ([modules/representation/memory_bank.py](../embedding/service.py)), so the feedback on batch *k* shapes batch *k+1*. Feedback accumulates over the whole query.
 
-The plan follows the same rules as [extension_plan.md](extension_plan.md):
+The plan follows three rules:
 - Nearly all the code goes in one new file.
 - Shared files only get small, additive hooks.
 - `SELECTION=random` keeps today's behaviour.
@@ -49,7 +51,7 @@ Write the score to `item["score"]`, as the interface intends. The browser sends 
 - Logs how many candidates were encoded (`coverage`), so we can tell when ranking was effectively random.
 - Ignores P or N items that have no vector yet.
 
-**Displayed batch is encoded first.** `RepresentationService.prioritize(ids)` exists, and `/search` and `/next` in [app.py](app.py) already call it with the displayed ids. Each batch on screen is therefore queued for encoding while the curator looks at it, and by the time they press Next its vectors are usually ready. The strategy needs no change for this.
+**Displayed batch is encoded first.** `RepresentationService.prioritize(ids)` exists, and `/search` and `/next` in [app.py](../../app.py) already call it with the displayed ids. Each batch on screen is therefore queued for encoding while the curator looks at it, and by the time they press Next its vectors are usually ready. The strategy needs no change for this.
   - One limit: a pool batch that is already being encoded is not interrupted, so with `REPRESENTATION_BATCH_SIZE=8` the feedback items can still be up to one batch late. That is what `RERANK_WAIT` covers.
 
 ## Files
@@ -59,14 +61,14 @@ Write the score to `item["score"]`, as the interface intends. The browser sends 
   - Helpers `_score_rocchio` and `_score_knn` are pure numpy over `bank.matrix(view)`, so they can be unit-tested without the model.
   - A `last_debug` dict holds the coverage, |P|, |N|, the explored ids and the score range, for the logger.
   - If `representation` is `None`, log a warning and delegate to `RandomStrategy`, so a misconfiguration never breaks the app.
-- **[config.py](config.py)**:
+- **[config.py](../../config.py)**:
   - Add `REGISTRY["selection"]["relevance_feedback"]`.
   - Change `_build_selection(key, representation=None)` so it reads the `RERANK_*` env vars when the key is `relevance_feedback`.
   - In `build_modules()`, build the representation first and pass it in.
-- **[app.py](app.py)**: no change is required. Optionally, `/next` passes `strategy.last_debug` to `log_next`.
-- **[modules/run_logger.py](modules/run_logger.py)**: add an optional `rerank` field to `log_next`, holding the scores, coverage and explored ids. This is what the evaluation runs on.
-- **[templates/index.html](templates/index.html)**: no visible UI change; there is no explicit "not relevant" button. One logic fix only. `keepItem` should remove the id from `serverHistory.rejected`. Today, an item kept after navigating back stays in both `accepted` and `rejected`. P ∪ N handles this on the server, but the history should be consistent.
-- **[.env.example](.env.example)**: add a section with these variables:
+- **[app.py](../../app.py)**: no change is required. Optionally, `/next` passes `strategy.last_debug` to `log_next`.
+- **[modules/run_logger.py](../../modules/run_logger.py)**: add an optional `rerank` field to `log_next`, holding the scores, coverage and explored ids. This is what the evaluation runs on.
+- **[templates/index.html](../../templates/index.html)**: no visible UI change; there is no explicit "not relevant" button. One logic fix only. `keepItem` should remove the id from `serverHistory.rejected`. Today, an item kept after navigating back stays in both `accepted` and `rejected`. P ∪ N handles this on the server, but the history should be consistent.
+- **[.env.example](../../.env.example)**: add a section with these variables:
   ```
   SELECTION=random              # random | relevance_feedback (needs REPRESENTATION)
   # RERANK_VIEW=fused           # fused | image | text (must be in REPRESENTATION_VIEWS)
@@ -79,7 +81,7 @@ Write the score to `item["score"]`, as the interface intends. The browser sends 
   # RERANK_WAIT=1.0             # seconds /next waits for the feedback items' vectors
   # RERANK_CROSS_QUERY=true     # items kept under earlier queries count as positives
   ```
-- **[DESIGN.md](DESIGN.md) / [README.md](README.md)**: add a module-table row and a short "Relevance feedback" section covering the feedback model, scoring, exploration and the env vars.
+- **[DESIGN.md](../../DESIGN.md) / [README.md](../../README.md)**: add a module-table row and a short "Relevance feedback" section covering the feedback model, scoring, exploration and the env vars.
 
 ## Steps
 1. Implement the scoring and composition helpers in pure numpy, with unit tests on synthetic vectors:
@@ -96,7 +98,7 @@ Write the score to `item["score"]`, as the interface intends. The browser sends 
 - **Offline simulation.** This is the main check, because it doesn't need a curator. Take an exported pool and define a simulated curator who keeps items that match a hidden target concept (a `type`/`material`/`place` URI from the Artifact). Run 5–10 batches with `random` and with `relevance_feedback`, and compare:
   - the per-batch acceptance rate
   - cumulative recall
-  - diversity, using [diversity_evaluator.py](modules/retrieval_evaluator/diversity_evaluator.py)
+  - diversity, using [diversity_evaluator.py](../../modules/retrieval_evaluator/diversity_evaluator.py)
 
   This would be a CLI, `python -m modules.selection.relevance_feedback export.json --target <uri>`, like the other module CLIs.
 - **Live logs.** `runs.log` already records the history for every `next` event. The acceptance rate per batch index, compared across the `random` and `relevance_feedback` conditions, is the in-use metric. It should rise over batches without diversity collapsing.
@@ -148,7 +150,7 @@ Both are weak, ambiguous signals. "Not kept" can mean "fine, but not here", and 
 `SelectionHistory` and the `select(pool, n, history)` interface stay the same. Only the meaning of `rejected` changes.
 
 ### Files
-- **[templates/index.html](templates/index.html)**, where nearly all of the change is:
+- **[templates/index.html](../../templates/index.html)**, where nearly all of the change is:
   - **State.**
     - Add `let negatives = []`, a list of item objects like `selected`, and an `isNegative(id)` helper.
     - `serverHistory.rejected` is no longer kept up to date by hand. Each `/next` request instead sends `history: {...serverHistory, rejected: negatives.map(i => i.id)}`. There are two calls: the multi-query first batch in `doSearch` and `nextBatch`.
@@ -170,19 +172,19 @@ Both are weak, ambiguous signals. "Not kept" can mean "fine, but not here", and 
     - Add `#negative-grid` next to `#selected-grid`, with one of the two hidden.
     - Turn the card-list half of `renderSelected` into `renderCardList(grid, items, onRemove, emptyMsg)` and use it for both grids.
     - Add `renderNegatives()`. The tab labels carry the counts that `#sel-stat` shows today.
-- **[modules/selection/relevance_feedback.py](modules/selection/relevance_feedback.py)**:
+- **[modules/selection/relevance_feedback.py](rerank_strategy.py)**:
   - In `_feedback`, with `cross_query` off, filter N to the pool as well (today only the kept ids are filtered).
   - In `select`, leave N out of the candidates.
   - Update the module docstring: N is now explicit negatives, and negatives are excluded from candidates.
   - **CLI simulation.** `_simulate` currently rejects every relevant item that wasn't shown. Add `--neg-rate` (default 0.3): the fraction of the non-relevant items shown in a batch that the simulated curator marks negative. It approximates an explicit curator, who marks only the clear misses.
-- **[modules/base.py](modules/base.py)** and **[modules/selection/_stub.py](modules/selection/_stub.py)**: change the comment and docstring on `rejected` to "item IDs the user explicitly marked not relevant".
-- **[config.py](config.py)**: change the `RERANK_GAMMA` default to `"0.5"`.
-- **[.env.example](.env.example)**: `RERANK_GAMMA=0.5`. Rewrite the comment so it describes explicit negatives, and say that `RERANK_CROSS_QUERY` applies to negatives too.
-- **[tests/test_relevance_feedback.py](tests/test_relevance_feedback.py)**: add tests that
+- **[modules/base.py](../base.py)** and **[modules/selection/_stub.py](_stub.py)**: change the comment and docstring on `rejected` to "item IDs the user explicitly marked not relevant".
+- **[config.py](../../config.py)**: change the `RERANK_GAMMA` default to `"0.5"`.
+- **[.env.example](../../.env.example)**: `RERANK_GAMMA=0.5`. Rewrite the comment so it describes explicit negatives, and say that `RERANK_CROSS_QUERY` applies to negatives too.
+- **[tests/test_relevance_feedback.py](../../tests/test_rerank_strategy.py)**: add tests that
   - negatives are excluded from the candidates;
   - with `cross_query=False`, negatives outside the pool are dropped;
   - an id that is in both `rejected` and P counts as a positive.
-- **[DESIGN.md](DESIGN.md) / [README.md](README.md)**:
+- **[DESIGN.md](../../DESIGN.md) / [README.md](../../README.md)**:
   - Revise the Negatives bullet (DESIGN.md:206) and the `SelectionHistory` row.
   - Describe the × and the Negatives tab.
   - Note that `rejected` in `runs.log` means explicit negatives from now on, so older logs are not comparable on that field.

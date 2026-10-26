@@ -8,6 +8,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request, sen
 import config
 from modules.artifact import Artifact
 from modules.base import ChatModelError, SelectionHistory
+from modules.embedding.service import DISPLAYED, FEEDBACK, POOL
 
 app = Flask(__name__)
 MODULES = config.build_modules()
@@ -113,12 +114,11 @@ def search():
     # step also strips placeholder images and removes artifacts without usable images.
     pool = _build_pool(artifacts)
 
-    # Optional representations: embed the pool in the background into the
-    # search bank. A new search_id replaces the bank (also when the pool is
-    # empty); the same one adds to it.
-    representation = MODULES.get("representation")
-    if representation:
-        representation.on_search(pool, data.get("search_id"))
+    # Optional embedding: encode the results in the background for
+    # embedding-based selection strategies (clustering, rerank).
+    embedding = MODULES.get("embedding")
+    if embedding:
+        embedding.ensure(pool, POOL)
 
     if not pool:
         # If no valid artifacts remain after filtering, return an empty pool while
@@ -130,8 +130,8 @@ def search():
     history = SelectionHistory()
     MODULES["selection"].prepare(pool)   # per-search work, e.g. clustering
     displayed = MODULES["selection"].select(pool, n, history)
-    if representation:
-        representation.prioritize([item["id"] for item in displayed])
+    if embedding:
+        embedding.ensure(displayed, DISPLAYED)   # feedback on these comes next
 
     # Optional retrieval evaluation: score the current pool against the query
     # features when an evaluator is configured.
@@ -140,7 +140,7 @@ def search():
 
     # Persist the search trail for auditing/logging before returning the result.
     MODULES["logger"].log_search(nl_query, sparql, pool, displayed, query_features, exhibition_theme,
-                                 rerank=getattr(MODULES["selection"], "last_debug", None))
+                                 selection_debug=getattr(MODULES["selection"], "last_debug", None))
     return jsonify({"sparql": sparql, "pool": pool, "displayed": displayed, "concepts": concepts, "metrics": metrics})
 
 
@@ -151,29 +151,25 @@ def next_batch():
     n = int(data.get("n", config.N_PER_BATCH))
     history = SelectionHistory.from_dict(data.get("history", {}))
 
+    # Everything the strategy needs comes with the request: the pool, and the
+    # kept items and negatives (full items, so they can be encoded even when
+    # they came from an earlier search). Nothing is remembered per curator.
+    embedding = MODULES.get("embedding")
+    if embedding:
+        embedding.ensure(data.get("feedback_items", []), FEEDBACK)
+        embedding.ensure(pool, POOL)    # this tab's pool to the front again
     displayed = MODULES["selection"].select(pool, n, history)
-    representation = MODULES.get("representation")
-    if representation:
-        representation.prioritize([item["id"] for item in displayed])
+    if embedding:
+        embedding.ensure(displayed, DISPLAYED)
     MODULES["logger"].log_next(data.get("history", {}), displayed,
-                               rerank=getattr(MODULES["selection"], "last_debug", None))
+                               selection_debug=getattr(MODULES["selection"], "last_debug", None))
     return jsonify({"displayed": displayed, "pool": pool})
 
 
-@app.route("/selection", methods=["POST"])
-def selection():
-    """Mirror the browser's kept items into the selection memory bank."""
-    representation = MODULES.get("representation")
-    if not representation:
-        return jsonify({"enabled": False})
-    data = request.get_json(silent=True) or {}
-    return jsonify(representation.sync_selection(data.get("items", [])))
-
-
-@app.route("/representations/status")
-def representations_status():
-    representation = MODULES.get("representation")
-    status = representation.status() if representation else {"enabled": False}
+@app.route("/embedding/status")
+def embedding_status():
+    embedding = MODULES.get("embedding")
+    status = embedding.status() if embedding else {"enabled": False}
     if PRELOADER:
         status["preload"] = PRELOADER.status()
     return jsonify(status)

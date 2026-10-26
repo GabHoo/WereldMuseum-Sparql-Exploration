@@ -745,7 +745,7 @@
   let currentMetrics = null; // last metrics response from /search
   let currentConcepts = [];  // concepts from /search: [{label, uri, feature}]
   let meta     = { query: '', sparql: '', exhibition_theme: '' };
-  let serverHistory = { accepted: [], seen: [] };   // rejected: see historyForServer()
+  let serverHistory = { seen: [] };   // accepted / rejected: see historyForServer()
 
   // Batch navigation: each entry is {displayed: [...], choices: {id: 'yes'|'no'}}
   // batchIdx points at what's currently shown; only atFrontier() triggers server calls.
@@ -756,8 +756,11 @@
   function curBatch()   { return batches[batchIdx] || { displayed: [] }; }
   function isKept(id)   { return selected.some(s => s.id === id); }
   function isNegative(id) { return negatives.some(s => s.id === id); }
-  // The history sent to /next: rejected is exactly the explicit negatives.
-  function historyForServer() { return { ...serverHistory, rejected: negatives.map(i => i.id) }; }
+  // The history sent to /next: accepted is everything kept (also under earlier
+  // searches), rejected exactly the explicit negatives. The server keeps none of it.
+  function historyForServer() {
+    return { seen: serverHistory.seen, accepted: selected.map(i => i.id), rejected: negatives.map(i => i.id) };
+  }
 
   /* ── DOM ────────────────────────────────────────────────────────────── */
   const poolSection = document.getElementById('pool-section');
@@ -1090,29 +1093,15 @@
     featureStats.hidden = false;
   }
 
-  /* ── Selection memory bank ──────────────────────────────────────────── */
-  // Mirror the kept items to the server's selection bank (Representation
-  // module; a no-op when it is disabled). Fire-and-forget: the full list is
-  // sent each time, so a lost request is repaired by the next one.
-  function syncSelection() {
-    fetch('/selection', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: selected }),
-    }).catch(() => {});
-  }
-
   /* ── Keep ───────────────────────────────────────────────────────────── */
   function keepItem(item) {
     if (isKept(item.id)) return;
     selected.push(item);
-    if (!serverHistory.accepted.includes(item.id)) serverHistory.accepted.push(item.id);
     // Keep and negative never overlap: keeping a negative moves it over.
     const negIdx = negatives.findIndex(s => s.id === item.id);
     if (negIdx !== -1) { negatives.splice(negIdx, 1); renderNegatives(); }
     refreshCard(item.id);
     renderSelected();
-    syncSelection();
   }
 
   /* ── Remove from selected ───────────────────────────────────────────── */
@@ -1121,9 +1110,6 @@
     const idx = selected.findIndex(s => s.id === itemId);
     if (idx === -1) return;
     selected.splice(idx, 1);
-    const accIdx = serverHistory.accepted.indexOf(itemId);
-    if (accIdx !== -1) serverHistory.accepted.splice(accIdx, 1);
-    syncSelection();
     refreshCard(itemId);
     renderSelected();
   }
@@ -1191,15 +1177,13 @@
     // Reset navigation; selected persists intentionally
     batches       = [];
     batchIdx      = -1;
-    serverHistory = { accepted: [], seen: [] };   // rejected: see historyForServer()
-    // One id per search: tells the Representation module a new query started.
-    const searchId = Date.now() + '-' + Math.random().toString(36).slice(2);
+    serverHistory = { seen: [] };
 
     try {
       const r = await fetch('/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, n: N, exhibition_theme: exhibitionTheme(), search_id: searchId }),
+        body: JSON.stringify({ query, n: N, exhibition_theme: exhibitionTheme() }),
       });
       const d = await r.json();
       renderConcepts(d.concepts || []);
@@ -1253,11 +1237,14 @@
       const r = await fetch('/next', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pool, n: N, history: historyForServer() }),
+        // Full kept / negative items too: the server encodes them if it has not yet.
+        body: JSON.stringify({ pool, n: N, history: historyForServer(),
+                               feedback_items: [...selected, ...negatives] }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed');
 
+      pool = d.pool;   // annotations a strategy wrote (clusters, scores) travel with the pool
       serverHistory.seen.push(...d.displayed.map(i => i.id));
       batches.push({ displayed: d.displayed });
       batchIdx = batches.length - 1;
@@ -1386,7 +1373,7 @@
     currentMetrics  = state.currentMetrics || null;
     currentConcepts = state.currentConcepts || [];
     meta            = state.meta || meta;
-    serverHistory   = state.serverHistory || serverHistory;
+    serverHistory   = { seen: state.serverHistory?.seen || [] };
     batches         = state.batches || [];
     batchIdx        = state.batchIdx ?? -1;
     keywordInput.value = state.keyword || '';
@@ -1420,9 +1407,6 @@
   });
 
   restoreSession();
-  // After restoring: the server's selection bank (Representation module) gets
-  // the restored list; on a fresh page that is empty, which clears a stale bank.
-  syncSelection();
 </script>
 
 <style>

@@ -23,8 +23,8 @@ User types a keyword query, optionally an exhibition theme
         │                                    │      (same fields for every object, lists for multi-values)
         └─ query features ─▶ [RetrievalEvaluator] ◀── pool   (optional: diversity / surprise)
                                              │
-                         pool ─▶ [Representation] ─▶ search bank     (optional, background:
-                         kept ─▶                 ─▶ selection bank   EmbeddingGemma 2 vectors)
+                         pool ─▶ [Embedding] ─▶ vectors per object   (optional, background, cached:
+                                                                      metadata_text | multimodal)
                                              ▼
                        [SelectionStrategy] ──picks N (~10)──▶ items shown to user
                                              │
@@ -47,16 +47,16 @@ User types a keyword query, optionally an exhibition theme
 | 2 | ConceptMatcher | `CONCEPT_MATCHER` | `match(nl_query) -> list[dict]` (used inside `concept_query`) |
 | 3 | KnowledgeBase | `KNOWLEDGE_BASE` | `execute(sparql) -> list[dict]` |
 | — | ArtifactFetcher | `ARTIFACT_FIELDS_FILE` | `fetch(ids) -> list[Artifact]` (infrastructure, configured per graph) |
-| 4 | SelectionStrategy | `SELECTION` | `select(pool, n, history) -> list[dict]` (`relevance_feedback` uses the Representation module) |
+| 4 | SelectionStrategy | `SELECTION` | `select(pool, n, history) -> list[dict]` (`random` \| `clustering` \| `rerank`) |
 | 5 | RetrievalEvaluator | `RETRIEVAL_EVALUATOR` | `score(pool, query_features) -> dict` (optional) |
 | 6 | Exporter | `EXPORTER` | `export(items, meta) -> bytes` |
 | 7 | RunLogger | `LOG_FILE`, `LOG_CONSOLE` | infrastructure, not pluggable |
 | 8 | ExhibitionBuilder | `EXHIBITION_BUILDER` | `build(export_data) -> str` (HTML page), optional `render(...)` |
 | 9 | ChatModel | `CHAT_MODEL` | `chat(messages) -> str` (used by the CurationAssistant, optional) |
 | — | CurationAssistant | `CHAT_CONTEXT_FIELDS` | `reply(message, items, exhibition_theme) -> str` (infrastructure around the ChatModel) |
-| 10 | Representation | `REPRESENTATION` | `ObjectEncoder.encode(objects) -> [{view: vector}]`, held in memory banks (optional) |
+| — | Embedding | `EMBEDDING` | `ObjectEncoder.encode(objects) -> [{view: vector}]` behind an `EmbeddingService` (optional; object vectors for `clustering` / `rerank`, §4) |
 
-All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`, the ObjectEncoder in `modules/representation/base.py`).
+All ABCs live in `modules/base.py` (RetrievalEvaluator sub-interfaces in `modules/retrieval_evaluator/base.py`, the ObjectEncoder in `modules/embedding/base.py`).
 
 ### 1. QueryGeneration
 
@@ -184,13 +184,13 @@ Rows are folded into `{field: [values]}` and then into `Artifact.from_values()`.
 
 ### 4. SelectionStrategy
 
-Picks which N items to show the user from the remaining pool, using feedback history.
+Picks which N items to show the user from the remaining pool, using feedback history. This is where the curator's feedback turns into recommendations; every strategy is one module behind the interface below.
 
 | | |
 |--|--|
 | **Input** | `pool: list[dict]` — all pool items (`id`, `title`, `score`, `properties`, optional `selection`) |
 | | `n: int` — number of items to return |
-| | `history: SelectionHistory` — `accepted` (ids kept so far in this search), `rejected` (ids explicitly marked not relevant), `seen` (every id shown) |
+| | `history: SelectionHistory` — `accepted` (ids of every kept item, also from earlier searches), `rejected` (ids explicitly marked not relevant, also from earlier searches), `seen` (every id shown in this search) |
 | **Output** | `list[dict]` — up to n items from pool, none of them in `history.seen` |
 | **Side effect** | May write `item["score"]` / `item["selection"]`; the changes travel with the pool into the next call |
 
@@ -200,7 +200,7 @@ class SelectionStrategy(ABC):
     def select(self, pool: list[dict], n: int, history: SelectionHistory) -> list[dict]: ...
 ```
 
-**State lives on the items.** The server keeps nothing between requests: the pool goes to the browser and comes back with every `/next`. A strategy that needs per-search data (clusters, scores) computes it in `prepare()` — called by `/search` on the fresh pool, before the first `select()` — and stores small, JSON-serialisable results in `item["selection"]`. Never store vectors there (100 × 768 floats would add >1 MB per request); keep them server-side, e.g. in the shared `TextEmbedder` cache. The browser fills `history.accepted` with the ids of kept cards when the user asks for the next batch.
+**State lives on the items and in the browser.** The server keeps nothing per curator between requests: the pool goes to the browser and comes back with every `/next` (the browser stores the returned pool, so annotations persist), and the browser builds `history` from what is on screen — `accepted` from its kept list, `rejected` from its negatives. A strategy that needs per-search data (clusters, scores) computes it in `prepare()` — called by `/search` on the fresh pool, before the first `select()` — and stores small, JSON-serialisable results in `item["selection"]`. Never store vectors there (100 × 768 floats would add >1 MB per request); they live in the Embedding module's cache (below). So several tabs or curators can work side by side.
 
 **Reusable building blocks** for new strategies:
 
@@ -211,26 +211,33 @@ class SelectionStrategy(ABC):
 | `metadata_linearization(fields)` | `modules/selection/utils.py` | returns item → one text line from the given Artifact fields (validated at startup) |
 | `largest_remainder(weights, total)` | `modules/selection/utils.py` | splits a number of slots over keys proportionally, in whole numbers |
 | `Clusterer` / `KMeansClusterer` | `modules/selection/clustering.py` | vectors → cluster labels (swap in another algorithm by implementing `fit`) |
-| `TextEmbedder` | `modules/embedding.py` | cached, normalised text embeddings; the model is loaded once per process and shared with the evaluator |
+| `EmbeddingService` | `modules/embedding/service.py` | object vectors (`vector`, `matrix`, `wait`); `config.py` injects it into embedding-based strategies |
 
-**Implementations:**
+**Implementations.** Two independent choices: `SELECTION` picks the strategy, `EMBEDDING` the vectors the embedding-based strategies work on. Every embedding-based strategy works with every embedding; other strategies (e.g. nearest neighbours of kept items) and other embeddings plug in the same way.
 
 | Name | Key | How it works |
 |------|-----|--------------|
-| `RandomStrategy` | `random` | `random.sample` over unseen items; ignores feedback. |
-| `MetadataTextualClusteringStrategy` | `metadata_textual_clustering` | Clusters the pool, shows one item per cluster first, then steers towards the clusters the user keeps from (below). |
-| `RelevanceFeedbackStrategy` | `relevance_feedback` | Re-ranks the unseen pool after every batch from the kept items and the explicit negatives, on object embeddings from the Representation module (§10) (below). |
+| `RandomStrategy` | `random` | `random.sample` over unseen items; ignores feedback. The baseline. |
+| `ClusteringStrategy` | `clustering` | Clusters the pool on its vectors, shows one item per cluster first, then steers towards the clusters the user keeps from (below). |
+| `RerankStrategy` | `rerank` | Relevance feedback: re-ranks the unseen pool after every batch towards the kept items and away from the explicit negatives (below). |
 
-#### MetadataTextualClusteringStrategy (`metadata_textual_clustering`)
+| | `EMBEDDING=metadata_text` (Artifact fields as text) | `EMBEDDING=multimodal` (image + metadata, EmbeddingGemma 2) |
+|--|--|--|
+| `clustering` | groups that read alike; ready at the first batch | groups that also look alike; first batch random while encoding (~30 s) |
+| `rerank` | fast, no 1.5 GB model | feedback on what objects look like, too |
 
-*prepare (once per search):* each item's metadata is linearized into one text by `metadata_linearization(METADATA_TEXTUAL_CLUSTERING_FIELDS)` (default `title`), embedded with the shared `TextEmbedder`, and clustered with k-means into `METADATA_TEXTUAL_CLUSTERING_N_CLUSTERS` clusters (default = 2 × batch size, 18, so clusters remain unshown after the first batch). Each item gets `item["selection"] = {"cluster": "<search-id>:<k>", "cluster_label": <most common text in the cluster>}`. The search-id prefix (a hash of the pool's ids) keeps clusters of different searches apart when the browser merges multi-category pools.
+Without `EMBEDDING`, `clustering` and `rerank` log a warning and select at random. What a strategy did in each batch (mode, and for `rerank` |P|, |N|, coverage, ranked and explored ids, scores) goes into the `selection_debug` field of the `search` and `next` log records.
+
+#### ClusteringStrategy (`clustering`)
+
+*prepare (once per search):* waits up to `CLUSTERING_WAIT` seconds (default 3) for the pool's vectors, which `/search` has just queued, in the `EMBEDDING_VIEW` space. `metadata_text` is ready in about a second, so the first batch is clustered. If not every item has a vector by then (`multimodal`, ~30 s per pool), the first batches are random and the pool is clustered in the first `select()` that finds every vector ready; set `CLUSTERING_WAIT=0` with `multimodal` to skip the wait. Clustering is k-means into `CLUSTERING_N_CLUSTERS` clusters (default = 2 × batch size, 18, so clusters remain unshown after the first batch); each item gets `item["selection"] = {"cluster": <k>, "cluster_label": <most common title in the cluster>}`, which travels with the pool, so this happens once per search.
 
 *select (every batch):*
 
 ```
 streak  = batches in a row (most recent first) in which nothing was kept   (from history.seen order)
-r       = min(1, s · streak)          (s = METADATA_TEXTUAL_CLUSTERING_SHUFFLE_STEP, default 0.25)
-steered = round(w · (1 − r) · n)      (w = METADATA_TEXTUAL_CLUSTERING_STEERING_WEIGHT, default 0.6)
+r       = min(1, s · streak)          (s = CLUSTERING_SHUFFLE_STEP, default 0.25)
+steered = round(w · (1 − r) · n)      (w = CLUSTERING_STEERING_WEIGHT, default 0.6)
           only once something is kept: shared over the clusters of history.accepted,
           in proportion to how many items were kept from each (largest remainder)
 random  = round(r · remaining) slots: uniform over all unseen items, ignoring clusters
@@ -246,37 +253,22 @@ order:  steered, then exploration, then random
 * `w = 0` never steers; `w = 1` fills the batch from kept clusters. `s = 0` disables the shuffling (empty batches change nothing).
 * Paging through the whole pool shows every item exactly once.
 
-Simulated on the *masker* pool (95 objects, 18 clusters), a curator who never keeps: batch 2 shows 8 never-shown clusters, then `r` = 0.25 → 0.50 → 0.75 → 1.0. Keeping in batch 1, nothing in 2–4, keeping again in 5: steering fades to 0 and returns right after the second keep.
+Simulated on the *masker* pool (95 objects, 18 clusters, `metadata_text`), a curator who never keeps: batch 2 shows 8 never-shown clusters, then `r` = 0.25 → 0.50 → 0.75 → 1.0. Keeping in batch 1, nothing in 2–4, keeping again in 5: steering fades to 0 and returns right after the second keep.
 
-*Trade-off: number of clusters.* More clusters leave unshown clusters to rotate to, but make clusters small: with 18 clusters the *masker* pool's sizes are 17, 15, 13, 9, 8, 5, 4, 3, 3, 3, 3, 3, 2, 2, 2, 1, 1, 1. Keeping an item from a cluster of 3 can steer at most 2 more cards; the remaining steered slots fall back to exploration. `METADATA_TEXTUAL_CLUSTERING_N_CLUSTERS=9` gives bigger clusters (stronger steering) but nothing left unshown after batch 1.
+*Trade-off: number of clusters.* More clusters leave unshown clusters to rotate to, but make clusters small: with 18 clusters the *masker* pool's sizes are 17, 15, 13, 9, 8, 5, 4, 3, 3, 3, 3, 3, 2, 2, 2, 1, 1, 1. Keeping an item from a cluster of 3 can steer at most 2 more cards; the remaining steered slots fall back to exploration. `CLUSTERING_N_CLUSTERS=9` gives bigger clusters (stronger steering) but nothing left unshown after batch 1. k-means never makes more clusters than there are distinct vectors (e.g. distinct texts with `metadata_text`).
 
-*Choosing the text (`METADATA_TEXTUAL_CLUSTERING_FIELDS`).* A comma-separated list of Artifact fields; their values are joined with ` · ` (list fields contribute all values joined with `, `, empty fields are skipped). Field names are checked against `Artifact` at startup.
+#### RerankStrategy (`rerank`)
 
-| `METADATA_TEXTUAL_CLUSTERING_FIELDS` | Text for an object |
-|------|--------------------|
-| `title` | `HOUTEN VROUWENFIGUUR VERBONDEN MET HET YASSI-GENOOTSCHAP` |
-| `title,type,material,place` | `HOUTEN VROUWENFIGUUR … · beelden · glas (materiaal), hout, tand (dierlijk), katoen · Liberia` |
-| `title,type,material,place` (untitled object) | `kokosnoot · Liberia` |
+`RerankStrategy` re-ranks the unseen pool after every batch from the curator's feedback, using the Embedding module's vectors in the `EMBEDDING_VIEW` space; it only needs L2-normalised vectors, so it works with any embedding. Feedback accumulates over the query and comes with every `/next`:
 
-*Choosing the fields.* Titles are often missing or generic in this collection (51 of 95 *masker* objects have none), which puts half the pool into one "(untitled)" cluster. Clustering on `METADATA_TEXTUAL_CLUSTERING_FIELDS=title,type,material,place` gives far more balanced and readable groups:
+- **Positives P**: `history.accepted` — every kept item, including one kept after going back to an earlier batch and ones kept under earlier searches. With `RERANK_CROSS_QUERY=false`, only kept items that are in the current pool count.
+- **Negatives N**: `history.rejected` minus P. These are the objects the curator explicitly marked not relevant with the × on a pool card. Being shown and not kept, or being removed from the selection, is not a negative. N weighs less than P (`RERANK_GAMMA=0.5` against `RERANK_BETA=1.0`). Negatives persist across searches, follow `RERANK_CROSS_QUERY` as positives do, and are never shown again.
 
-| Search | Fields | Cluster sizes |
-|--------|--------|---------------|
-| masker | `title` | 51, 24, 12, 3, 1, 1, 1, 1, 1 |
-| masker | `title,type,material,place` | 23, 17, 16, 11, 11, 6, 5, 4, 2 |
-| Liberia | `title` | 26, 21, 12, 6, 5, 4, 3, 1, 1 |
-| Liberia | `title,type,material,place` | 18, 15, 14, 8, 7, 5, 5, 5, 2 (e.g. "gras · Liberia", "hout · Liberia", "hoeden · plantenvezel · Liberia") |
-
-#### Relevance feedback (`SELECTION=relevance_feedback`)
-
-`RelevanceFeedbackStrategy` re-ranks the unseen pool after every batch from the curator's feedback, using the Representation module's vectors (§10), which `config.py` injects. Feedback accumulates over the query:
-
-- **Positives P**: `history.accepted` plus the selection bank, since an item can be kept after going back to an earlier batch. With `RERANK_CROSS_QUERY=false`, only kept items that are in the current pool count.
-- **Negatives N**: `history.rejected` minus P. These are the objects the curator explicitly marked not relevant with the × on a pool card. Being shown and not kept, or being removed from the selection, is not a negative. N weighs less than P (`RERANK_GAMMA=0.5` against `RERANK_BETA=1.0`). Negatives persist across searches, follow `RERANK_CROSS_QUERY` as positives do, and are never shown again. One from an earlier query counts while its vector is still in the encoder cache.
+`/next` also receives the full kept and negative items (`feedback_items`), so their vectors are encoded first even when they come from an earlier search or the cache has dropped them.
 
 In the browser, the × appears when the mouse is over a card that isn't kept. Clicking it again un-marks the card, and Keep on a negative moves it to the selection. The selection panel has two tabs, **Selection** and **Negatives**, and a negative can be removed from the second. Changes take effect on the next batch.
 
-Each unseen candidate with a vector is scored, in the `RERANK_VIEW` space:
+Each unseen candidate with a vector is scored:
 
 | `RERANK_SCORING` | Score |
 |--|--|
@@ -287,11 +279,74 @@ A batch of n has `round(RERANK_EXPLORE·n)` random candidates (default 2 of 10),
 
 Vectors are filled in the background, so the strategy:
 - ranks only the candidates that already have a vector and fills the free slots at random;
-- waits at most `RERANK_WAIT` seconds for the feedback items' own vectors, which are usually ready because `/search` and `/next` call `prioritize` on the batch on screen.
+- waits at most `RERANK_WAIT` seconds for the feedback items' own vectors, which are usually ready because `/search` and `/next` queue the batch on screen first.
 
-Without feedback (the first batch of a query), without encoded feedback, or without the Representation module, it selects at random. What it did (mode, |P|, |N|, coverage, ranked and explored ids, scores) goes into the `rerank` field of the `search` and `next` log records.
+Without feedback (the first batch of a query), without encoded feedback, or without `EMBEDDING`, it selects at random.
 
-To compare it offline with random selection, run `python -m modules.selection.relevance_feedback <pool.json | export.json | runs.log> --target <concept URI> [--neg-rate 0.3]`. A simulated curator keeps the objects that have the target type, material or place, and marks a share `--neg-rate` of the other objects shown as negatives. The command prints the acceptance rate, cumulative recall and batch diversity per batch. Without `--target`, it lists the most common concepts in the pool.
+To compare it offline with random selection, run `python -m modules.selection.rerank_strategy <pool.json | export.json | runs.log> --target <concept URI> [--neg-rate 0.3]` (uses the configured `EMBEDDING`, default `metadata_text`). A simulated curator keeps the objects that have the target type, material or place, and marks a share `--neg-rate` of the other objects shown as negatives. The command prints the acceptance rate, cumulative recall and batch diversity per batch. Without `--target`, it lists the most common concepts in the pool. Design notes from before it was built: `modules/selection/reranking_plan.md`.
+
+#### Embedding (`EMBEDDING`, optional)
+
+Turns collection objects into vectors for the embedding-based strategies. Enabled by setting `EMBEDDING`; when unset, no model is loaded and nothing else changes. Everything lives in `modules/embedding/`.
+
+```python
+class ObjectEncoder(ABC):
+    views: tuple                      # subset of ("fused", "image", "text")
+    def encode(self, objects: list[dict]) -> list[dict]: ...   # [{id, text, image_path}] → [{view: vec}]
+    def object_text(self, properties: dict) -> str: ...       # Artifact dict → text to embed
+    needs_images: bool                # property: True when a view uses the image
+```
+
+| Name | Key | Vectors from |
+|------|-----|--------------|
+| `MetadataTextEncoder` | `metadata_text` | the Artifact fields in `EMBEDDING_TEXT_FIELDS` as one line of text, embedded with the multilingual sentence-transformer `EMBEDDING_MODEL` (shared with the RetrievalEvaluator). One view, `text`. |
+| `MultimodalEncoder` | `multimodal` | image + metadata with [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) (`EMBEDDING_MULTIMODAL_MODEL`), which maps text and images into one 768-d space. View `EMBEDDING_VIEW`: `fused` (default), `image` or `text`. Needs `transformers` 5.19+. |
+
+Vectors are L2-normalised, so cosine similarity is a dot product.
+
+*metadata_text.* A comma-separated list of Artifact fields; their values are joined with ` · ` (list fields contribute all values joined with `, `, empty fields are skipped), and objects with no text become `(untitled)`. Field names are checked against `Artifact` at startup. Each distinct text is embedded once, so identical texts get identical vectors (encoded in different batches, the model's output differs in the last digits). A 100-object pool takes about a second.
+
+| `EMBEDDING_TEXT_FIELDS` | Text for an object |
+|------|--------------------|
+| `title` | `HOUTEN VROUWENFIGUUR VERBONDEN MET HET YASSI-GENOOTSCHAP` |
+| `title,type,material,place` | `HOUTEN VROUWENFIGUUR … · beelden · glas (materiaal), hout, tand (dierlijk), katoen · Liberia` |
+| `title,type,material,place` (untitled object) | `kokosnoot · Liberia` |
+
+*Choosing the fields.* Titles are often missing or generic in this collection (51 of 95 *masker* objects have none), which puts half the pool into one "(untitled)" cluster. Clustering on `EMBEDDING_TEXT_FIELDS=title,type,material,place` gives far more balanced and readable groups:
+
+| Search | Fields | Cluster sizes |
+|--------|--------|---------------|
+| masker | `title` | 51, 24, 12, 3, 1, 1, 1, 1, 1 |
+| masker | `title,type,material,place` | 23, 17, 16, 11, 11, 6, 5, 4, 2 |
+| Liberia | `title` | 26, 21, 12, 6, 5, 4, 3, 1, 1 |
+| Liberia | `title,type,material,place` | 18, 15, 14, 8, 7, 5, 5, 5, 2 (e.g. "gras · Liberia", "hout · Liberia", "hoeden · plantenvezel · Liberia") |
+
+*multimodal.* Views:
+
+| View | Input |
+|------|-------|
+| `fused` | metadata text + `<\|image\|>` with the object's image, as one input (text only if no image is available) |
+| `image` | the image alone |
+| `text` | the metadata text alone |
+
+The text is in the model's document format: `title: <title> | text: type: …; material: …; place: …; date: …; maker: …; intended use: …; description: …` (description cut at 500 characters). The image is the first non-placeholder image, taken from ImageCache's on-disk thumbnail, so no second download path exists. `EMBEDDING_DIM` truncates the vectors (Matryoshka: 512 / 256 / 128) and re-normalises them. The audio encoder is never loaded; float16 is refused because it silently breaks this model.
+
+*Cost (multimodal).* Images dominate: at the model's default 280 vision tokens per image, a fused vector takes ~0.3–0.8 s per object on Apple MPS (~3× slower on CPU), so a 100-object pool fills in ~30 s to ~1.5 min; text-only is ~100× cheaper. `EMBEDDING_IMAGE_TOKENS=140` (or `70`) is ~2× (~4×) faster, with vectors at cosine ~0.98 (~0.97) to the default ones. The worker fetches each batch's thumbnails 4 at a time.
+
+**EmbeddingService** (`service.py`) computes the vectors on one background thread, in batches (`EMBEDDING_BATCH_SIZE`), so `/search` is as fast as without the module, and caches them per object id (LRU, `EMBEDDING_CACHE_SIZE`), so objects returning in later queries are free. Requests are served by priority — the kept items and negatives sent with `/next`, then the batch on screen, then the rest of the pool, then demo preloading — and within a priority the newest request first: a new search is encoded before the leftovers of an older one, and a pool sent again with `/next` moves to the front again. A batch that fails is not cached, so the next request queues it again.
+
+```python
+emb = MODULES["embedding"]
+emb.ensure(pool, POOL)                     # queue for encoding (cached items are skipped)
+ids, mat = emb.matrix(pool_ids, "fused")   # the ids that have a vector, in order; n × d
+vec = emb.vector(item_id, "fused")         # None while not encoded
+emb.wait(ids, timeout=1.0)                 # block until these are encoded
+emb.status()                               # {enabled, views, cached, queued} — GET /embedding/status
+```
+
+**State.** The service holds no per-curator state — no "current search", no "kept items": every request says which objects it needs, and the cache only holds vectors, which are the same for everyone. Two tabs searching different queries therefore both get their pools encoded and ranked.
+
+CLI check, without the app: `python -m modules.embedding.service export.json [--k 3]` embeds an export with the configured `EMBEDDING` and prints each object's nearest neighbours.
 
 ---
 
@@ -385,8 +440,8 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 
 | | |
 |--|--|
-| **Events logged** | `search` — query, exhibition_theme, query_features, generated SPARQL, full pool, first displayed batch, `rerank` (what a re-ranking strategy did) |
-| | `next` — current history (accepted / rejected / seen), next displayed batch. Since explicit negatives, `rejected` holds only the objects marked not relevant; older logs recorded every shown-but-not-kept object there |
+| **Events logged** | `search` — query, exhibition_theme, query_features, generated SPARQL, full pool, first displayed batch, `selection_debug` (what the selection strategy did) |
+| | `next` — current history (accepted / rejected / seen), next displayed batch, `selection_debug`. Since explicit negatives, `rejected` holds only the objects marked not relevant and `accepted` every kept object; older logs recorded every shown-but-not-kept object in `rejected` and only this search's keeps in `accepted` (and `rerank` instead of `selection_debug`) |
 | | `export` — exported items and metadata |
 | | `chat` — curator message, exhibition_theme, selected item ids, assistant reply |
 | **Format** | JSON Lines (`.jsonl` / `.log`): one `json.loads()`-able object per line, append-only |
@@ -396,8 +451,8 @@ Records every curation event to a **JSON Lines** file (one JSON object per line)
 ```python
 class RunLogger:
     def log_search(self, query: str, sparql: str, pool: list, displayed: list, query_features: dict = None,
-                   exhibition_theme: str = "", rerank: dict = None) -> None: ...
-    def log_next(self, history: dict, displayed: list, rerank: dict = None) -> None: ...
+                   exhibition_theme: str = "", selection_debug: dict = None) -> None: ...
+    def log_next(self, history: dict, displayed: list, selection_debug: dict = None) -> None: ...
     def log_export(self, items: list, meta: dict) -> None: ...
     def log_chat(self, message: str, reply: str, items: list, exhibition_theme: str = "") -> None: ...
 ```
@@ -449,57 +504,6 @@ Leave `CHAT_MODEL` blank to disable the assistant: the chat box is not shown and
 
 ---
 
-### 10. Representation (optional)
-
-Embeds collection objects (image + metadata) as vectors and keeps them in memory for downstream tasks such as re-ranking and recommendation. Enabled by setting `REPRESENTATION=embeddinggemma`; when unset, the model is never loaded and nothing else changes. Everything lives in `modules/representation/`.
-
-**Encoder.** `EmbeddingGemmaEncoder` uses [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) (`REPRESENTATION_MODEL`), which maps text and images into one 768-d space. Per object it computes the configured views (`REPRESENTATION_VIEWS`, default `fused`):
-
-| View | Input |
-|------|-------|
-| `fused` | metadata text + `<\|image\|>` with the object's image, as one input (text only if no image is available) |
-| `image` | the image alone |
-| `text` | the metadata text alone |
-
-The text is in the model's document format: `title: <title> | text: type: …; material: …; place: …; date: …; maker: …; intended use: …; description: …` (description cut at 500 characters). The image is the first non-placeholder image, taken from ImageCache's on-disk thumbnail, so no second download path exists. Vectors are L2-normalised, so cosine similarity is a dot product; `REPRESENTATION_DIM` truncates them (Matryoshka: 512 / 256 / 128) and re-normalises. The audio encoder is never loaded; float16 is refused because it silently breaks this model.
-
-**Cost.** Images dominate: at the model's default 280 vision tokens per image, a fused vector takes ~0.8 s per object on Apple MPS (~3× slower on CPU), so a 100-object pool fills in ~1.5 min; text-only is ~100× cheaper. `REPRESENTATION_IMAGE_TOKENS=140` (or `70`) is ~2× (~4×) faster, with vectors at cosine ~0.98 (~0.97) to the default ones. The worker fetches each batch's thumbnails 4 at a time.
-
-```python
-class ObjectEncoder(ABC):
-    views: tuple                      # subset of ("fused", "image", "text")
-    def encode(self, objects: list[dict]) -> list[dict]: ...   # [{id, text, image_path}] → [{view: vec}]
-    def object_text(self, properties: dict) -> str: ...       # Artifact dict → text to embed
-```
-
-**Memory banks.** `RepresentationService` (`memory_bank.py`) holds two `MemoryBank`s:
-
-| Bank | Holds | Refresh |
-|------|-------|---------|
-| search bank | the pool of the current query | replaced on every new query (`/search` with a new `search_id`); calls with the same `search_id` add to it |
-| selection bank | the objects the curator kept | persists across queries; mirrors the browser's `selected` list via `POST /selection` (full list each time, so it is idempotent and a page reload clears it) |
-
-Encoding runs on one background thread in batches (`REPRESENTATION_BATCH_SIZE`), so `/search` is as fast as without the module. Selection batches go first, then the batch on screen (`/search` and `/next` call `prioritize` with the displayed ids, so feedback on it is usable after about two batches rather than at the end of the pool), then the rest of the pool; batches of a superseded query are skipped. Vectors are cached per object id (LRU, `REPRESENTATION_CACHE_SIZE`), so a kept item, normally already encoded as a search result, is not encoded again, and objects returning in later queries are free.
-
-**Using the banks** (e.g. from a future SelectionStrategy, which gets the service injected in `config.py`):
-
-```python
-rep = MODULES["representation"]
-ids, mat = rep.search_bank.matrix("fused")       # rows follow pool order
-taste    = rep.selection_bank.centroid("fused")  # None while nothing is kept
-scores   = mat @ taste                           # similarity of each result to the selection
-rep.similarity("fused", ids, rep.selection_bank) # items × kept items
-rep.prioritize(ids)                              # encode these search results next
-rep.wait("search", timeout=30)                   # block until the search bank is encoded
-rep.status()                                     # {search: {total, done, ready}, selection: {…}}
-```
-
-**State.** This is the one place where the server keeps state between requests. It assumes one curator per server process; every method takes a `session` argument (only `"default"` is used) so per-user banks can be added later.
-
-CLI check, without the app: `python -m modules.representation.embeddinggemma export.json [--k 3]` embeds an export and prints each object's nearest neighbours per view.
-
----
-
 ## Default Configuration & Implementation Selection
 
 Configuration lives in two files:
@@ -509,14 +513,14 @@ Configuration lives in two files:
 QUERY_GENERATION=concept_query     # concept_query
 CONCEPT_MATCHER=thesaurus          # used by concept_query
 KNOWLEDGE_BASE=sparql_endpoint
-SELECTION=random                   # random | relevance_feedback
+SELECTION=random                   # random | clustering | rerank
+EMBEDDING=                         # metadata_text | multimodal | blank = off
 EXPORTER=json
 EXHIBITION_BUILDER=digital_wall
 RETRIEVAL_EVALUATOR=               # diversity | blank = off
-METADATA_TEXTUAL_CLUSTERING_FIELDS=title         # used by SELECTION=metadata_textual_clustering
-METADATA_TEXTUAL_CLUSTERING_STEERING_WEIGHT=0.6
-METADATA_TEXTUAL_CLUSTERING_SHUFFLE_STEP=0.25
-REPRESENTATION=                    # embeddinggemma | blank = off
+EMBEDDING_TEXT_FIELDS=title        # used by EMBEDDING=metadata_text
+CLUSTERING_STEERING_WEIGHT=0.6     # used by SELECTION=clustering
+CLUSTERING_SHUFFLE_STEP=0.25
 ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json
 
 # Module settings (only the relevant ones are used)
@@ -542,8 +546,8 @@ REGISTRY = {
     },
     "selection": {
         "random":                      "modules.selection.random_strategy.RandomStrategy",
-        "metadata_textual_clustering": "modules.selection.metadata_textual_clustering.MetadataTextualClusteringStrategy",
-        "relevance_feedback":          "modules.selection.relevance_feedback.RelevanceFeedbackStrategy",
+        "clustering":                  "modules.selection.clustering_strategy.ClusteringStrategy",
+        "rerank":                      "modules.selection.rerank_strategy.RerankStrategy",
     },
     "exporter": {
         "json": "modules.exporter.json_exporter.JSONExporter",
@@ -554,13 +558,14 @@ REGISTRY = {
     "exhibition_builder": {
         "digital_wall": "modules.exhibition_builder.digital_wall.DigitalWall",
     },
-    "representation": {
-        "embeddinggemma": "modules.representation.embeddinggemma.EmbeddingGemmaEncoder",
+    "embedding": {
+        "metadata_text": "modules.embedding.metadata_text.MetadataTextEncoder",
+        "multimodal":    "modules.embedding.multimodal.MultimodalEncoder",
     },
 }
 ```
 
-Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator; `_build_representation` wraps the encoder in a `RepresentationService` with the shared ImageCache, and `_build_selection` injects that service into `relevance_feedback`.
+Each module type has a `_build_<type>()` function in `config.py` that passes constructor arguments from `.env`. `build_modules()` also builds the `ArtifactFetcher` around the chosen KnowledgeBase. Composition happens there too: `_build_query_generation("concept_query")` calls `_build_concept_matcher(CONCEPT_MATCHER)` and injects the result, and `_build_retrieval_evaluator` assembles encoder + calculator; `build_embedding` wraps the encoder (`_build_encoder`) in an `EmbeddingService` with the shared ImageCache, and `_build_selection` injects that service and `EMBEDDING_VIEW` into `clustering` and `rerank`.
 
 Adding a new implementation = add one registry entry + set the env var (plus a `_build_*` branch if it needs constructor args). No other files change.
 
@@ -647,7 +652,7 @@ Pool items wrap an artifact for the UI and the selection loop:
 
 ## Curation UI (`templates/index.html`)
 
-A single page; all state (pool, history, selection) lives in the browser. On leaving the page (`pagehide`: going to the exhibition page, reloading) it is saved to `sessionStorage` under `curation-state`, together with the keyword, theme and chat messages, and restored on the next load in the same tab. Closing the tab clears it.
+A single page; all state (pool, history, selection) lives in the browser. On leaving the page (`pagehide`: going to the exhibition page, reloading) it is saved to `sessionStorage` under `curation-state`, together with the keyword, theme, negatives and chat messages, and restored on the next load in the same tab. Closing the tab clears it.
 
 ```
 ┌ Search by keyword ─ text box (concept_query) · Theme ─ free text           ┐
@@ -688,19 +693,18 @@ Infrastructure behind `/thumb`. On the first request for an image URL it downloa
 
 ## Flask API (stateless server)
 
-**State lives entirely in the browser** (pool, history, current display). The server is a pure function: same inputs → same outputs. The one exception is the optional Representation module's memory banks (§10), which only observe the pool and the selection and never change a response.
+**State lives entirely in the browser** (pool, history, current display). The server is a pure function: same inputs → same outputs. The server's only memory is caches that are the same for every user — thumbnails, and the Embedding module's vectors (§4) — so several tabs or curators can work side by side.
 
 | Method | Path | Request body | Response |
 |--------|------|-------------|----------|
 | `GET` | `/` | — | Serves `index.html` |
-| `POST` | `/search` | `{ query: str, n: int, exhibition_theme: str, search_id?: str }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
-| `POST` | `/next` | `{ pool: [...], n: int, history: {...} }` | `{ displayed: [...], pool: [...] }` |
+| `POST` | `/search` | `{ query: str, n: int, exhibition_theme: str }` | `{ sparql: str, pool: [...], displayed: [...], concepts: [{label, uri, feature}], metrics: {diversity, surprise} \| null }` |
+| `POST` | `/next` | `{ pool: [...], n: int, history: {seen, accepted, rejected}, feedback_items: [...] }` — `feedback_items` are the full kept and negative items | `{ displayed: [...], pool: [...] }` (the browser keeps the returned pool) |
 | `POST` | `/export` | `{ items: [...], meta: {...} }` | JSON file download |
 | `POST` | `/exhibition` | form field `export` = JSON `{ items, meta }` | HTML page from the ExhibitionBuilder |
 | `POST` | `/exhibition/render` | multipart: `scene` (PNG), `description`, `variation` | Rendered PNG; `501` if the builder doesn't render, `500` with `{error}` on failure |
 | `POST` | `/api/chat` | `{ message: str, items: [...], exhibition_theme: str }` | `{ reply: str }`; `503` with `{ error }` when no model is configured or it cannot answer |
-| `POST` | `/selection` | `{ items: [...] }` — all kept items | Representation status, or `{enabled: false}` |
-| `GET` | `/representations/status` | — | `{enabled, views, search: {total, done, ready}, selection: {…}}` |
+| `GET` | `/embedding/status` | — | `{enabled, views, cached, queued}` (+ `preload` with `PRELOAD_QUERIES`), or `{enabled: false}` |
 | `GET` | `/thumb?url=…` | — | Cached JPEG thumbnail; `404` if the image is a placeholder, `403` if the host is not allowed, `502` if it can't be fetched |
 
 ---
@@ -714,7 +718,6 @@ museum_curation/
 │   ├── artifact.py                      # Artifact dataclass — the fixed object schema
 │   ├── artifact_fetcher.py              # artifact URIs → Artifact objects (fetch query)
 │   ├── image_cache.py                   # /thumb: cached thumbnails + placeholder detection
-│   ├── embedding.py                     # shared sentence-transformer + TextEmbedder cache
 │   ├── run_logger.py                    # RunLogger — append-only JSON Lines event log
 │   ├── curation_assistant.py            # CurationAssistant — chat prompt + selection context for a ChatModel
 │   ├── query_generation/
@@ -731,9 +734,10 @@ museum_curation/
 │   │   ├── _stub.py
 │   │   ├── utils.py                     # unseen(), largest_remainder(), metadata_linearization()
 │   │   ├── clustering.py                # Clusterer ABC + KMeansClusterer
-│   │   ├── metadata_textual_clustering.py # cluster → one per cluster → steer to kept clusters
 │   │   ├── random_strategy.py           # random.sample(unseen, n)
-│   │   └── relevance_feedback.py        # re-ranks by feedback on the vectors (+ simulation CLI)
+│   │   ├── clustering_strategy.py       # cluster → one per cluster → steer to kept clusters
+│   │   ├── rerank_strategy.py           # relevance feedback on the vectors (+ simulation CLI)
+│   │   └── reranking_plan.md            # design notes behind rerank_strategy.py
 │   ├── retrieval_evaluator/
 │   │   ├── _stub.py
 │   │   ├── base.py                      # FeatureEncoder, MetricsCalculator, SurpriseCalculator ABCs
@@ -742,11 +746,13 @@ museum_curation/
 │   │   ├── metrics_calculator.py        # diversity (pairwise embedding distance)
 │   │   ├── surprise_calculator.py       # surprise (items outside the searched concepts)
 │   │   └── diversity_recommender_design.md
-│   ├── representation/                  # optional: object embeddings + memory banks
+│   ├── embedding/                       # optional: object vectors for selection
 │   │   ├── base.py                      # ObjectEncoder ABC
 │   │   ├── _stub.py
-│   │   ├── embeddinggemma.py            # EmbeddingGemma 2 encoder (+ CLI)
-│   │   └── memory_bank.py               # MemoryBank, RepresentationService (background worker)
+│   │   ├── sentence_model.py            # shared sentence-transformer (also the evaluator's)
+│   │   ├── metadata_text.py             # MetadataTextEncoder (EMBEDDING=metadata_text)
+│   │   ├── multimodal.py                # MultimodalEncoder, EmbeddingGemma 2 (EMBEDDING=multimodal)
+│   │   └── service.py                   # EmbeddingService: background encoding + cache (+ CLI)
 │   ├── exporter/
 │   │   ├── _stub.py
 │   │   └── json_exporter.py
@@ -770,6 +776,10 @@ museum_curation/
 │   ├── index.html
 │   └── digital_wall.html                # DigitalWall editor page
 ├── static/digital_wall/                 # editor script, styles, prop images
+├── tests/                               # unit tests, no model needed: python -m tests.test_<name>
+│   ├── test_embedding_service.py        # queueing, priorities, two tabs, retries (fake encoder)
+│   ├── test_clustering_strategy.py      # clustered vs random first batch, steering
+│   └── test_rerank_strategy.py          # scoring, MMR, positives / negatives, fallbacks
 ├── requirements.txt
 ├── .cache/thumbnails/                 # gitignored; written by ImageCache
 └── runs.log                             # gitignored; written by RunLogger
