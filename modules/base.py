@@ -57,7 +57,7 @@ class QueryGeneration(ABC):
     """
     User input → SPARQL. The entry point app.py talks to for /search.
     Implementations may delegate concept matching to a ConceptMatcher
-    (ConceptQuery) or map input to URIs directly (CategorySelect).
+    (ConceptQuery) or map input to URIs directly.
     """
 
     @abstractmethod
@@ -68,13 +68,6 @@ class QueryGeneration(ABC):
         counts artifacts). Metadata is not selected here — ArtifactFetcher
         fetches it for the returned URIs.
         """
-
-    def get_categories(self) -> list:
-        """
-        Return display labels for category-based UI (e.g. button labels).
-        Default is empty — only meaningful for CategorySelect-style implementations.
-        """
-        return []
 
     def match_concepts(self, nl_query: str) -> list:
         """

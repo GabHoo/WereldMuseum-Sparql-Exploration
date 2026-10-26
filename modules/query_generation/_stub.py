@@ -15,10 +15,9 @@ class MyQueryGeneration(QueryGeneration):
 
     def convert(self, nl_query: str, context: dict) -> str:
         """
-        nl_query : user input string (category name, keyword, or free text)
+        nl_query : user input string (keyword or free text)
         context  : dict from config — contains whatever graph-specific data
                    this implementation needs, e.g.:
-                     context["categories"]        → {label: uri}
                      context["sparql_template"]   → SPARQL template override
                      context["schema_snippet"]    → ontology snippet for LLM prompts
 

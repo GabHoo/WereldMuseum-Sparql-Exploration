@@ -73,26 +73,6 @@
       flex-shrink: 0;
     }
 
-    .cat-btn {
-      background: transparent;
-      border: 1px solid #b0a490;
-      color: var(--text-on-dark);
-      font-family: var(--mono);
-      font-size: 0.75rem;
-      padding: 6px 14px;
-      cursor: pointer;
-      letter-spacing: 0.04em;
-      transition: background 0.12s, border-color 0.12s, color 0.12s;
-    }
-
-    .cat-btn:hover { border-color: var(--accent); color: var(--accent); }
-
-    .cat-btn.active {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
-
     #keyword-wrap { display: flex; }
 
     #keyword-input {
@@ -466,22 +446,6 @@
     #next-btn:disabled,
     #prev-btn:disabled { opacity: 0.28; cursor: default; }
 
-    #cat-search-btn {
-      margin-left: 8px;
-      background: var(--accent);
-      border: 1px solid var(--accent);
-      color: #fff;
-      font-family: var(--mono);
-      font-size: 0.7rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      padding: 6px 18px;
-      cursor: pointer;
-      transition: background 0.12s;
-    }
-    #cat-search-btn:hover:not(:disabled) { background: var(--accent-light); }
-    #cat-search-btn:disabled { opacity: 0.35; cursor: default; }
-
     #status-msg {
       font-size: 0.65rem;
       color: var(--text-muted);
@@ -670,21 +634,13 @@
 </header>
 
 <div id="query-bar">
-  {% if query_generation_mode == 'category_select' %}
-    <label>Category</label>
-    {% for cat in categories %}
-      <button class="cat-btn" data-cat="{{ cat }}">{{ cat }}</button>
-    {% endfor %}
-    <button id="cat-search-btn" disabled>Search</button>
-  {% else %}
-    <label>Search by keyword</label>
-    <form id="kw-form">
-      <div id="keyword-wrap">
-        <input id="keyword-input" type="text" placeholder="e.g. funeral masks, West Africa…" autocomplete="off">
-        <button class="search-btn" type="submit">Search</button>
-      </div>
-    </form>
-  {% endif %}
+  <label>Search by keyword</label>
+  <form id="kw-form">
+    <div id="keyword-wrap">
+      <input id="keyword-input" type="text" placeholder="e.g. funeral masks, West Africa…" autocomplete="off">
+      <button class="search-btn" type="submit">Search</button>
+    </div>
+  </form>
   <label for="theme-input">Theme</label>
   <input id="theme-input" type="text" maxlength="200" autocomplete="off"
          placeholder="e.g. Central Asian items significant to the nomadic lifestyle">
@@ -756,7 +712,6 @@
 
 <script>
   const N = {{ n_per_batch }};
-  const MODE = "{{ query_generation_mode }}";
 
   /* ── State ──────────────────────────────────────────────────────────── */
   let pool           = [];   // full result pool for current search
@@ -765,7 +720,6 @@
   let currentConcepts = [];  // concepts from /search: [{label, uri, feature}]
   let meta     = { query: '', sparql: '', exhibition_theme: '' };
   let serverHistory = { accepted: [], rejected: [], seen: [] };
-  let selectedCats  = new Set();  // category_select mode: active category buttons
 
   // Batch navigation: each entry is {displayed: [...], choices: {id: 'yes'|'no'}}
   // batchIdx points at what's currently shown; only atFrontier() triggers server calls.
@@ -795,7 +749,7 @@
   const featureStats    = document.getElementById('feature-stats');
   const errArea     = document.getElementById('err-area');
   const themeInput  = document.getElementById('theme-input');
-  const keywordInput = document.getElementById('keyword-input');  // null in category_select mode
+  const keywordInput = document.getElementById('keyword-input');
 
   /* ── Helpers ────────────────────────────────────────────────────────── */
   // Curator's framing of the exhibition, e.g. "items significant to nomadic life"
@@ -863,18 +817,6 @@
   function shortId(id)   { return id.split('/').pop() || id; }
   function clearErr()    { errArea.innerHTML = ''; }
   function showErr(msg)  { errArea.innerHTML = `<p class="err">${esc(msg)}</p>`; }
-
-  function mergePools(pools) {
-    const seen = new Set();
-    const out  = [];
-    for (const p of pools) {
-      for (const item of p) {
-        const key = item.id;  // one pool item per artifact
-        if (!seen.has(key)) { seen.add(key); out.push(item); }
-      }
-    }
-    return out;
-  }
 
   /* ── Nav button state ───────────────────────────────────────────────── */
   function updateNav() {
@@ -1146,15 +1088,14 @@
   }
 
   /* ── Search ─────────────────────────────────────────────────────────── */
-  async function doSearch(queries) {
+  async function doSearch(query) {
     clearErr();
     statusMsg.textContent = 'Querying…';
     featureStats.hidden = true;
     currentConcepts = [];
     prevBtn.disabled = true;
     nextBtn.disabled = true;
-    if (queries.length === 1) showConceptsLoading();
-    else conceptTags.hidden = true;
+    showConceptsLoading();
 
     // Reset navigation; selected persists intentionally
     batches       = [];
@@ -1162,50 +1103,22 @@
     serverHistory = { accepted: [], rejected: [], seen: [] };
 
     try {
-      let firstPool, firstDisplayed, firstSparql, firstMetrics = null;
+      const r = await fetch('/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, n: N, exhibition_theme: exhibitionTheme() }),
+      });
+      const d = await r.json();
+      renderConcepts(d.concepts || []);
+      if (!r.ok) throw new Error(d.error || 'Search failed');
+      currentConcepts = d.concepts || [];
 
-      if (queries.length === 1) {
-        const r = await fetch('/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: queries[0], n: N, exhibition_theme: exhibitionTheme() }),
-        });
-        const d = await r.json();
-        if (!r.ok) { renderConcepts(d.concepts || []); throw new Error(d.error || 'Search failed'); }
-        renderConcepts(d.concepts || []);
-        currentConcepts = d.concepts || [];
-        firstPool      = d.pool;
-        firstDisplayed = d.displayed;
-        firstSparql    = d.sparql;
-        firstMetrics   = d.metrics || null;
-      } else {
-        // Parallel requests for each category, then merge pools
-        const results = await Promise.all(queries.map(q =>
-          fetch('/search', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: q, n: N, exhibition_theme: exhibitionTheme() }),
-          }).then(r => r.json())
-        ));
-        firstPool   = mergePools(results.map(d => d.pool));
-        firstSparql = results.map(d => d.sparql).join('\n--- next query ---\n');
-        // Ask the server's SelectionStrategy to pick the first batch
-        const nr = await fetch('/next', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pool: firstPool, n: N, history: serverHistory }),
-        });
-        const nd = await nr.json();
-        if (!nr.ok) throw new Error(nd.error || 'Failed to get first batch');
-        firstDisplayed = nd.displayed;
-      }
+      pool = d.pool;
+      meta = { query, sparql: d.sparql, exhibition_theme: exhibitionTheme() };
+      currentMetrics = d.metrics || null;
+      serverHistory.seen = d.displayed.map(i => i.id);
 
-      pool = firstPool;
-      meta = { query: queries.join(' + '), sparql: firstSparql, exhibition_theme: exhibitionTheme() };
-      currentMetrics = firstMetrics || null;
-      serverHistory.seen = firstDisplayed.map(i => i.id);
-
-      batches  = [{ displayed: firstDisplayed }];
+      batches  = [{ displayed: d.displayed }];
       batchIdx = 0;
 
       poolSection.hidden = false;
@@ -1365,9 +1278,8 @@
       : [];
     const state = {
       pool, selected, currentMetrics, currentConcepts, meta, serverHistory, batches, batchIdx,
-      keyword: keywordInput ? keywordInput.value : '',
+      keyword: keywordInput.value,
       theme: themeInput.value,
-      cats: [...selectedCats],
       chat,
     };
     try {
@@ -1388,12 +1300,8 @@
     serverHistory   = state.serverHistory || serverHistory;
     batches         = state.batches || [];
     batchIdx        = state.batchIdx ?? -1;
-    if (keywordInput) keywordInput.value = state.keyword || '';
+    keywordInput.value = state.keyword || '';
     themeInput.value = state.theme || '';
-    selectedCats = new Set(state.cats || []);
-    document.querySelectorAll('.cat-btn').forEach(b => b.classList.toggle('active', selectedCats.has(b.dataset.cat)));
-    const catSearchBtn = document.getElementById('cat-search-btn');
-    if (catSearchBtn) catSearchBtn.disabled = selectedCats.size === 0;
     if (chatWindow) for (const m of state.chat || []) addChatMsg(m.role, m.text);
 
     renderConcepts(currentConcepts);
@@ -1415,33 +1323,11 @@
   exhibitionBtn.addEventListener('click', buildExhibition);
   if (chatForm) chatForm.addEventListener('submit', sendChat);
 
-  if (MODE === 'category_select') {
-    const catSearchBtn = document.getElementById('cat-search-btn');
-
-    document.querySelectorAll('.cat-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const cat = btn.dataset.cat;
-        if (selectedCats.has(cat)) {
-          selectedCats.delete(cat);
-          btn.classList.remove('active');
-        } else {
-          selectedCats.add(cat);
-          btn.classList.add('active');
-        }
-        catSearchBtn.disabled = selectedCats.size === 0;
-      });
-    });
-
-    catSearchBtn.addEventListener('click', () => {
-      if (selectedCats.size > 0) doSearch([...selectedCats]);
-    });
-  } else {
-    document.getElementById('kw-form').addEventListener('submit', e => {
-      e.preventDefault();
-      const q = keywordInput.value.trim();
-      if (q) doSearch([q]);
-    });
-  }
+  document.getElementById('kw-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const q = keywordInput.value.trim();
+    if (q) doSearch(q);
+  });
 
   restoreSession();
 </script>

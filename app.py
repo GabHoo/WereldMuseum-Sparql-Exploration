@@ -44,11 +44,8 @@ def _build_pool(artifacts: list[Artifact]) -> list:
 
 @app.route("/")
 def index():
-    t2s = MODULES["query_generation"]
     return render_template(
         "index.html",
-        query_generation_mode=MODULES["query_generation_key"],
-        categories=t2s.get_categories(),
         n_per_batch=config.N_PER_BATCH,
         chat_model_key=MODULES.get("chat_model_key"),
     )

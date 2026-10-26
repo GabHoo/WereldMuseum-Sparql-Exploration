@@ -9,7 +9,7 @@ A modular, graph-agnostic tool that helps museum curators build exhibitions by q
 ## User Flow
 
 ```
-User types NL query (or clicks a category), optionally an exhibition theme
+User types a keyword query, optionally an exhibition theme
         │
         ▼
   [QueryGeneration] ──converts──▶ FIND query (SELECT DISTINCT ?artifact … LIMIT 100)
@@ -60,23 +60,21 @@ Converts user input into a SPARQL **find** query for the target graph. This is t
 
 | | |
 |--|--|
-| **Input** | `nl_query: str` — the user's input (a category selection or free text) |
+| **Input** | `nl_query: str` — the user's free-text input |
 | | `context: dict` — optional per-call overrides, e.g. `context["sparql_template"]` |
 | **Output** | `str` — a SPARQL `SELECT DISTINCT ?artifact` query; the `?artifact` column must hold artifact URIs, and `LIMIT` therefore counts artifacts |
 
 ```python
 class QueryGeneration(ABC):
     def convert(self, nl_query: str, context: dict) -> str: ...          # abstract
-    def get_categories(self) -> list[str]: ...                           # button labels; default []
     def match_concepts(self, nl_query: str) -> list[dict]: ...           # concepts for the UI; default []
     def get_query_features(self, nl_query: str) -> dict[str, str]: ...   # pinned features; default {}
 ```
 
-**Implementations (both shipped):**
+**Implementation (shipped):**
 
 | Name | Key | How it works |
 |------|-----|-------------|
-| `CategorySelect` | `category_select` | UI presents a fixed list of category buttons (`CATEGORIES_FILE` overrides the defaults). User picks one → known URI → substituted into a find-query template (that type or any sub-type, with an image). No text input, no concept matching, no query features. |
 | `ConceptQuery` | `concept_query` | UI shows a free-text box. Delegates text → concepts to the configured **ConceptMatcher** (§2), then only builds SPARQL: URIs are grouped by `feature` and each group becomes one required `VALUES` + `skos:narrower*` block (AND across features, OR within one). The outer template keeps only artifacts with an image and returns their URIs. The matcher runs once per query string; `match_concepts`, `get_query_features` and `convert` reuse the cached result (the cache is read into a local first, so concurrent requests can't swap concepts). `keyword_matching` is a legacy alias key. |
 
 **Why the split.** Before, one `KeywordMatching` module both matched text to thesaurus concepts and filled the SPARQL template. Now *which concepts the user meant* (ConceptMatcher) is separate from *what to fetch for them* (ConceptQuery), so a new matcher (embeddings, an LLM) reuses the same templates, and template changes don't touch matching. ConceptQuery receives its matcher by constructor injection from `config.py`; `app.py` is unaware of the matcher.
@@ -93,7 +91,7 @@ Feature names are **Artifact field names**. A ConceptMatcher tags each concept w
 
 `get_query_features()` returns the searched **concept URIs** per feature, e.g. `{"type": ["https://hdl.handle.net/…/termmaster10069604"]}`, which compare directly with `properties["type_uris"]` of every item — this is how the `RetrievalEvaluator` measures surprise, without any key translation or label matching.
 
-`get_query_features()` returns `{}` on implementations that don't produce typed concept matches (e.g. `CategorySelect`), in which case the evaluator treats the query as unpinned and reports only diversity.
+`get_query_features()` returns `{}` on implementations that don't produce typed concept matches, in which case the evaluator treats the query as unpinned and reports only diversity.
 
 ---
 
@@ -428,7 +426,7 @@ Configuration lives in two files:
 
 **`.env`** (not committed, copied from `.env.example`):
 ```ini
-QUERY_GENERATION=category_select   # category_select | concept_query
+QUERY_GENERATION=concept_query     # concept_query
 CONCEPT_MATCHER=thesaurus          # used by concept_query
 KNOWLEDGE_BASE=sparql_endpoint
 SELECTION=random
@@ -451,7 +449,6 @@ KEYWORD_MATCHING_THESAURUS_FILES=collections/wereld_museum/thesaurus1.csv,...
 ```python
 REGISTRY = {
     "query_generation": {
-        "category_select":  "modules.query_generation.category_select.CategorySelect",
         "concept_query":    "modules.query_generation.concept_query.ConceptQuery",
         "keyword_matching": "modules.query_generation.concept_query.ConceptQuery",  # legacy alias
     },
@@ -565,10 +562,10 @@ Pool items wrap an artifact for the UI and the selection loop:
 
 ## Curation UI (`templates/index.html`)
 
-A single page; all state (pool, history, selection) lives in the browser. On leaving the page (`pagehide`: going to the exhibition page, reloading) it is saved to `sessionStorage` under `curation-state`, together with the keyword, theme, active categories and chat messages, and restored on the next load in the same tab. Closing the tab clears it.
+A single page; all state (pool, history, selection) lives in the browser. On leaving the page (`pagehide`: going to the exhibition page, reloading) it is saved to `sessionStorage` under `curation-state`, together with the keyword, theme and chat messages, and restored on the next load in the same tab. Closing the tab clears it.
 
 ```
-┌ Search ─ keyword box (concept_query) or category buttons (category_select) ┐
+┌ Search by keyword ─ text box (concept_query) · Theme ─ free text           ┐
 ├ Concepts: chips for each matched concept (link to its URI)                 ┤
 ├ Pool section ──────────────────────────────────────────────────────────────┤
 │  EXPLORING  100 objects            ← total pool size, fixed per search     │
@@ -589,7 +586,6 @@ A single page; all state (pool, history, selection) lives in the browser. On lea
 - A feature the query **searched on** (some concept in `/search`'s `concepts` has that `feature`) shows the searched labels as fixed chips marked *searched*.
 - Every **other** feature is a collapsible list: the summary shows the most common value and the number of distinct values; expanded, it lists every value with its count and a bar, most common first, plus *not recorded* for objects without that field.
 - Counts are computed in the browser from the pool's Artifact dicts: each object counts **once per distinct value**, so an object with two materials counts for both and totals can exceed the pool size. Counts cover the **whole pool**, not the visible batch, so they don't change when paging.
-- In category mode no concepts are returned, so all three features are lists. Multi-category searches are merged in the browser first, so the counts cover the merged pool.
 
 **Batching.** `/search` returns the first `N` cards (`N_PER_BATCH`, default 9); *Next batch* asks `/next` for `N` unseen ones (pure in-memory selection, ~1 ms — no SPARQL). The bottom-left indicator shows `Batch i / ⌈pool / N⌉`. *Previous* / *Forward* re-show earlier batches from browser history without calling the server.
 
@@ -636,7 +632,6 @@ museum_curation/
 │   ├── curation_assistant.py            # CurationAssistant — chat prompt + selection context for a ChatModel
 │   ├── query_generation/
 │   │   ├── _stub.py                     # copy-paste template for new impls
-│   │   ├── category_select.py           # baseline: fixed category buttons
 │   │   └── concept_query.py             # matched concepts → SPARQL (VALUES + narrower*)
 │   ├── concept_matching/
 │   │   ├── _stub.py
@@ -671,7 +666,6 @@ museum_curation/
 │       └── digital_wall.py              # wall editor + OpenAI photorealistic render
 ├── collections/
 │   └── wereld_museum/                   # graph-specific utility space
-│       ├── wereldmuseum_categories.json # label → concept URI mapping (optional override)
 │       ├── thesaurus1-3.csv             # vocabulary for the thesaurus ConceptMatcher
 │       ├── artifact_fields.json         # Artifact field → SPARQL pattern for this graph
 │       └── notavailable.jpg             # reference placeholder image for perceptual hash filter
@@ -719,14 +713,12 @@ Each graph (knowledge base) that the tool connects to gets its own subfolder und
 ```
 collections/
 └── wereld_museum/
-    ├── wereldmuseum_categories.json   # label → concept URI mapping
     ├── thesaurus1-3.csv               # concept vocabulary (concept, prefLabel, broad, altLabels)
     ├── artifact_fields.json           # how each Artifact field is read from this graph
     └── notavailable.jpg               # reference "image not available" placeholder
 ```
 
 **What belongs here:**
-- Category / concept URI mappings (`CATEGORIES_FILE` env var)
 - Thesaurus vocabularies for concept matching (`KEYWORD_MATCHING_THESAURUS_FILES`)
 - The Artifact field mapping (`ARTIFACT_FIELDS_FILE`)
 - Placeholder / dummy images (`PLACEHOLDER_IMAGE_FILE` — perceptual hash comparison via imagehash + Pillow, done by ImageCache when a thumbnail is first made; results persist in `THUMBNAIL_CACHE_DIR`)

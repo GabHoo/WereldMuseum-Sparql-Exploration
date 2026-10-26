@@ -19,7 +19,6 @@ load_dotenv()
 
 REGISTRY = {
     "query_generation": {
-        "category_select":  "modules.query_generation.category_select.CategorySelect",
         "concept_query":    "modules.query_generation.concept_query.ConceptQuery",
         # Legacy alias: before the matcher/query split this key named the
         # combined module. Kept so existing .env files keep working.
@@ -67,8 +66,6 @@ N_PER_BATCH = int(os.getenv("N_PER_BATCH", "9"))
 
 def _build_query_generation(key: str):
     cls = _load_class("query_generation", key)
-    if key == "category_select":
-        return cls(categories_file=os.getenv("CATEGORIES_FILE", ""))
     if key in ("concept_query", "keyword_matching"):
         return cls(matcher=_build_concept_matcher(os.getenv("CONCEPT_MATCHER", "thesaurus")))
     return cls()
@@ -191,7 +188,7 @@ def _build_curation_assistant(chat_key: str):
 
 
 def build_modules() -> dict:
-    qg_key  = os.getenv("QUERY_GENERATION", "category_select")
+    qg_key  = os.getenv("QUERY_GENERATION", "concept_query")
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
     sel_key = os.getenv("SELECTION", "random")
     exp_key = os.getenv("EXPORTER", "json")
@@ -209,7 +206,6 @@ def build_modules() -> dict:
         "exporter":             _build_exporter(exp_key),
         "exhibition_builder":   _build_exhibition_builder(eb_key),
         "logger":               _build_logger(),
-        "query_generation_key": qg_key,
     }
     if re_key:
         modules["retrieval_evaluator"] = _build_retrieval_evaluator(re_key, knowledge_base)

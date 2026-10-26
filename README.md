@@ -26,7 +26,7 @@ Open `http://127.0.0.1:5000`. If port 5000 is taken (another checkout of the app
 All module selection is done via `.env`. Copy `.env.example` to `.env` and set:
 
 ```ini
-QUERY_GENERATION=category_select  # category_select | concept_query
+QUERY_GENERATION=concept_query    # concept_query
 CONCEPT_MATCHER=thesaurus         # thesaurus (used by concept_query)
 KNOWLEDGE_BASE=sparql_endpoint    # sparql_endpoint | rdf_file
 SELECTION=random                  # random | title_cluster
@@ -56,7 +56,6 @@ ARTIFACT_FIELDS_FILE=collections/wereld_museum/artifact_fields.json   # default
 
 | Key | How it works |
 |-----|-------------|
-| `category_select` | Buttons with predefined categories; no text input |
 | `concept_query` | Free-text box; a concept matcher maps the text to concept URIs, which are pinned as type, material and origin in the SPARQL query. `keyword_matching` still works as an alias. |
 
 ### Concept matcher (used by `concept_query`)
