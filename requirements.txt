@@ -5,4 +5,5 @@ rdflib>=6.0
 Pillow>=9.0
 imagehash>=4.3
 sentence-transformers>=6.1   # multimodal encode() for EmbeddingGemma 2
+transformers>=5.19           # first release with the EmbeddingGemma2 model + processor classes
 torchvision                  # image processor of EmbeddingGemma 2
