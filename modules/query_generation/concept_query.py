@@ -6,6 +6,14 @@ This module only decides *what to fetch* for a set of concepts. Deciding
 (modules/concept_matching/), injected via config, so matchers and query
 templates can be swapped independently.
 
+Example: "masker" → the matcher returns one concept,
+    {"uri": …/termmaster10069604, "label": "maskers (kleding)", "feature": "type"}
+→ the query asks for artifacts whose type is that concept or any narrower
+one (skos:narrower*), that have an image; at most 100 URIs.
+Several concepts of one feature are alternatives (OR, one VALUES list);
+different features must all hold (AND, one block each), e.g. type = masks
+AND material = wood.
+
 Configure via .env:
     QUERY_GENERATION=concept_query
     CONCEPT_MATCHER=thesaurus
@@ -55,6 +63,8 @@ _REQUIRED_PATTERNS = {
 
 
 class ConceptQuery(QueryGeneration):
+    """Free text → concepts (the injected ConceptMatcher) → SPARQL find query."""
+
     def __init__(self, matcher: ConceptMatcher):
         self._matcher = matcher
         self._last: tuple[str, list] | None = None  # (nl_query, concepts)
@@ -72,6 +82,8 @@ class ConceptQuery(QueryGeneration):
         return concepts
 
     def match_concepts(self, nl_query: str) -> list:
+        """The matched concepts that have a label: the concept chips and the
+        "searched" values in the page's feature stats."""
         return [
             {"label": c["label"], "uri": c["uri"], "feature": c["feature"]}
             for c in self._concepts(nl_query)
@@ -79,6 +91,7 @@ class ConceptQuery(QueryGeneration):
         ]
 
     def get_query_features(self, nl_query: str) -> dict:
+        """{feature: [concept URIs]}, for the RetrievalEvaluator and the run log."""
         # All matched URIs, including unlabelled ancestors: they are part of
         # what the find query searched for.
         features: dict[str, list[str]] = {}
@@ -87,6 +100,7 @@ class ConceptQuery(QueryGeneration):
         return features
 
     def convert(self, nl_query: str, context: dict) -> str:
+        """The find query for nl_query; ValueError when no concept matches."""
         concepts = self._concepts(nl_query)
         if not concepts:
             raise ValueError(

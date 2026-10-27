@@ -33,6 +33,7 @@ VARIATION_STYLES = [
 
 
 def build_prompt(description: str, variation: int) -> str:
+    """Image-edit prompt: 0 = faithful render, 1+ = a re-imagining in VARIATION_STYLES."""
     desc = description or DEFAULT_DESCRIPTION
     if variation == 0:
         return (

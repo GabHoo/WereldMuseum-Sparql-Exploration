@@ -68,9 +68,13 @@ def _load_thesaurus(*paths: str) -> dict:
 
 def _get_coherent_superconcept(concepts: list, thesaurus: dict) -> set:
     """
-    Walk the broader-concept tree upward until a single ancestor concept covers
-    multiple of the matched concepts. Returns the shared ancestor(s), or the
-    original set if no convergence is found.
+    Generalise the concepts one word matched to their common ancestor(s).
+
+    Each round replaces the set by the parents that two or more of its
+    concepts share; a concept whose parent no other concept shares drops out.
+    Stops when one concept is left or no parent is shared. E.g. "masker"
+    matches many mask concepts, which collapse to "maskers (kleding)".
+    Returns the original set if no two concepts share a parent.
     """
     frontier = set(concepts)
     while len(frontier) > 1:
@@ -91,6 +95,10 @@ def _prompt_to_uris(prompt: str, thesaurus: dict) -> set:
     Split the prompt into words, skip filler words, match each against thesaurus
     labels, and return a set of concept URIs — collapsed to coherent superconcepts
     where possible.
+
+    A word matches a label that *contains* it, not the other way round, and
+    words are not lemmatised: "houten" (wooden) matches labels containing
+    "houten", not the material "hout".
     """
     words = [w.lower() for w in re.split(r'\s+', prompt.strip()) if w]
     words = [w for w in words if w not in _FILLER_WORDS]
@@ -108,11 +116,14 @@ def _prompt_to_uris(prompt: str, thesaurus: dict) -> set:
 
 
 def word_to_lemma(word):
-    # todo
+    # todo: not used yet. Meant to reduce a word to its base form before
+    # matching (e.g. "houten" → "hout", "maskers" → "masker").
     return word
 
 
 class ThesaurusMatcher(ConceptMatcher):
+    """Keyword → thesaurus concepts, by label substring match (see the module docstring)."""
+
     def __init__(self, thesaurus_files: list = None, sparql_endpoint_url: str = ""):
         self._thesaurus = _load_thesaurus(*(thesaurus_files or []))
         self._endpoint_url = sparql_endpoint_url
@@ -141,6 +152,9 @@ class ThesaurusMatcher(ConceptMatcher):
                 sparql.setQuery(_ANCESTOR_QUERY.format(uri=uri))
                 sparql.setReturnFormat(JSON)
                 results = sparql.query().convert()
+                # One row per ancestor label. The first label that names a
+                # top-level category decides; the for/else breaks out of both
+                # loops on that first hit.
                 for binding in results["results"]["bindings"]:
                     label_lower = binding["label"]["value"].lower()
                     for cat_label, feature_key in _CATEGORY_FEATURE_MAP.items():
@@ -151,7 +165,7 @@ class ThesaurusMatcher(ConceptMatcher):
                         continue
                     break
             except Exception:
-                pass
+                pass   # endpoint unreachable: keep _DEFAULT_FEATURE
         self._feature_cache[uri] = key
         return key
 

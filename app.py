@@ -45,6 +45,7 @@ def _build_pool(artifacts: list[Artifact]) -> list:
 
 @app.route("/")
 def index():
+    """The curation page (templates/index.html); all page state lives in the browser."""
     return render_template(
         "index.html",
         n_per_batch=config.N_PER_BATCH,
@@ -70,6 +71,15 @@ def thumb():
 
 @app.route("/search", methods=["POST"])
 def search():
+    """
+    A new search. Body: {query, n?, exhibition_theme?}.
+
+    query → SPARQL (QueryGeneration) → artifact URIs (KnowledgeBase, or the
+    preloaded PoolCache) → metadata (ArtifactFetcher) → pool; the
+    SelectionStrategy then picks the first batch.
+    Returns {sparql, pool, displayed, concepts, metrics}. The browser keeps
+    the pool and sends it back with every /next.
+    """
     # Read the JSON body sent by the frontend, defaulting to an empty dict when
     # the request has no payload or cannot be decoded.
     data = request.get_json(silent=True) or {}
@@ -146,6 +156,13 @@ def search():
 
 @app.route("/next", methods=["POST"])
 def next_batch():
+    """
+    The next batch of the current search.
+    Body: {pool, n?, history: {seen, accepted, rejected}, feedback_items}
+    (feedback_items: the full kept and negative items, see below).
+    Returns {displayed, pool}: the pool goes back too, because strategies
+    annotate its items (clusters, scores) and the browser stores them.
+    """
     data = request.get_json(silent=True) or {}
     pool = data.get("pool", [])
     n = int(data.get("n", config.N_PER_BATCH))
@@ -168,6 +185,7 @@ def next_batch():
 
 @app.route("/embedding/status")
 def embedding_status():
+    """For debugging: how many vectors are cached / queued, and the demo preload's progress."""
     embedding = MODULES.get("embedding")
     status = embedding.status() if embedding else {"enabled": False}
     if PRELOADER:
@@ -177,6 +195,7 @@ def embedding_status():
 
 @app.route("/export", methods=["POST"])
 def export():
+    """Download the selection, serialised by the configured Exporter. Body: {items, meta}."""
     data = request.get_json(silent=True) or {}
     items = data.get("items", [])
     meta = data.get("meta", {})

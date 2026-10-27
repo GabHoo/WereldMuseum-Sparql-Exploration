@@ -3,6 +3,10 @@
 Version 1 computes a Shannon entropy for each descriptive metadata field and
 returns their unweighted mean. Keeping fields separate avoids mixing unrelated
 categories such as object types and production dates into one distribution.
+
+Not called by the app: the curation page computes the same score in the
+browser, live as the selection changes (calculateSelectionDiversity in
+templates/index.html). This is the reference version; keep the two in sync.
 """
 from collections import Counter
 from math import log

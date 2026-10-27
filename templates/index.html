@@ -747,8 +747,9 @@
   let meta     = { query: '', sparql: '', exhibition_theme: '' };
   let serverHistory = { seen: [] };   // accepted / rejected: see historyForServer()
 
-  // Batch navigation: each entry is {displayed: [...], choices: {id: 'yes'|'no'}}
-  // batchIdx points at what's currently shown; only atFrontier() triggers server calls.
+  // Batch navigation: each entry is {displayed: [...]} (kept / negative state
+  // lives in selected / negatives). batchIdx points at what's currently shown;
+  // only atFrontier() triggers server calls.
   let batches  = [];
   let batchIdx = -1;
 
@@ -913,6 +914,9 @@
     'type', 'material', 'place', 'date', 'maker', 'intended_use', 'acquisition', 'acquired_from'
   ];
 
+  // Mean over DIVERSITY_FIELDS of the Shannon entropy (nats) of each field's
+  // values in the selection; an object with several values splits its weight
+  // of 1 over them. Same as modules/retrieval_evaluator/selection_diversity.py.
   function calculateSelectionDiversity(items) {
     const entropies = [];
     for (const field of DIVERSITY_FIELDS) {

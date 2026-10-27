@@ -44,7 +44,6 @@ from modules.base import SelectionHistory, SelectionStrategy
 log = logging.getLogger(__name__)
 
 
-
 # ── Scoring and batch composition (pure numpy) ───────────────────────────────
 
 def _unit(vec: np.ndarray) -> np.ndarray:
@@ -71,6 +70,7 @@ def _mean_top_k(sims: np.ndarray, k: int) -> np.ndarray:
 
 def _score_knn(cands: np.ndarray, pos: np.ndarray, neg: np.ndarray,
                beta: float, gamma: float, k: int) -> np.ndarray:
+    """Like _score_rocchio, but against the k nearest P / N items instead of their centroids."""
     scores = np.zeros(len(cands), dtype=np.float32)
     if len(pos):
         scores += beta * _mean_top_k(cands @ pos.T, k)
@@ -82,6 +82,8 @@ def _score_knn(cands: np.ndarray, pos: np.ndarray, neg: np.ndarray,
 def _mmr(cands: np.ndarray, scores: np.ndarray, n: int, lam: float) -> list:
     """Indices of n candidates picked greedily by maximal marginal relevance."""
     picked: list = []
+    # max_sim[i]: similarity of candidate i to the most similar item picked so
+    # far (-inf while nothing is picked, counted as no redundancy).
     max_sim = np.full(len(cands), -np.inf, dtype=np.float32)
     available = np.ones(len(cands), dtype=bool)
     for _ in range(min(n, len(cands))):
@@ -90,7 +92,7 @@ def _mmr(cands: np.ndarray, scores: np.ndarray, n: int, lam: float) -> list:
         best = int(np.argmax(gain))
         picked.append(best)
         available[best] = False
-        max_sim = np.maximum(max_sim, cands @ cands[best])
+        max_sim = np.maximum(max_sim, cands @ cands[best])   # update with the new pick
     return picked
 
 
@@ -120,6 +122,11 @@ class RerankStrategy(SelectionStrategy):
         self.last_debug: dict = {}   # what the last select() did, for the run log
 
     def select(self, pool: list, n: int, history: SelectionHistory) -> list:
+        """
+        Random while there is nothing to rank on (no embedding, no feedback, or
+        the feedback not encoded yet); otherwise score, MMR and explore as in
+        the module docstring. Writes item["score"] on the ranked candidates.
+        """
         seen = set(history.seen) | set(history.rejected)
         cands = [item for item in pool if item["id"] not in seen]
         if self.emb is None:
@@ -185,6 +192,7 @@ class RerankStrategy(SelectionStrategy):
         return pos, neg
 
     def _stack(self, ids: list) -> np.ndarray:
+        """The vectors of the ids that are encoded, as an array (0 rows if none)."""
         vecs = [v for v in (self.emb.vector(i, self.view) for i in ids) if v is not None]
         return np.stack(vecs) if vecs else np.zeros((0, 0), dtype=np.float32)
 
@@ -212,7 +220,7 @@ def _concepts(item: dict) -> set:
     return {uri for field in _CONCEPT_FIELDS for uri in props.get(field) or []}
 
 
-def _simulate(strategy, rep, pool: list, relevant: set, batches: int, n: int,
+def _simulate(strategy, embedding, pool: list, relevant: set, batches: int, n: int,
               neg_rate: float, rng: random.Random) -> list:
     """Per batch: (acceptance rate, cumulative recall, diversity of the batch).
 
@@ -230,7 +238,7 @@ def _simulate(strategy, rep, pool: list, relevant: set, batches: int, n: int,
         history.accepted += [item["id"] for item in hits]
         misses = [item["id"] for item in shown if item["id"] not in relevant]
         history.rejected += rng.sample(misses, round(neg_rate * len(misses)))
-        vecs = [v for v in (rep.vector(item["id"], strategy.view) for item in shown) if v is not None]
+        vecs = [v for v in (embedding.vector(item["id"], strategy.view) for item in shown) if v is not None]
         if len(vecs) >= 2:
             mat = np.stack(vecs)
             sims = mat @ mat.T
@@ -276,19 +284,19 @@ if __name__ == "__main__":
 
     key = os.getenv("EMBEDDING", "").strip() or "metadata_text"
     print(f"Loading model ({key}) …")
-    rep = config.build_embedding(key)
+    embedding = config.build_embedding(key)
     print("Encoding the pool …")
-    rep.ensure(pool)
-    rep.wait([item["id"] for item in pool], timeout=None)
+    embedding.ensure(pool)
+    embedding.wait([item["id"] for item in pool], timeout=None)
 
     kwargs = {"view": config.embedding_view(key), **config.rerank_kwargs()}
     strategies = {
         "random": lambda seed: RerankStrategy(None, rng=random.Random(seed), **kwargs),
-        "rerank": lambda seed: RerankStrategy(rep, rng=random.Random(seed), **kwargs),
+        "rerank": lambda seed: RerankStrategy(embedding, rng=random.Random(seed), **kwargs),
     }
     logging.getLogger(__name__).setLevel(logging.ERROR)   # the random baseline's warning
     for name, make in strategies.items():
-        results = np.array([_simulate(make(seed), rep, pool, relevant, batches, n,
+        results = np.array([_simulate(make(seed), embedding, pool, relevant, batches, n,
                                       neg_rate, random.Random(seed)) for seed in range(runs)])
         mean = np.nanmean(results, axis=0)
         print(f"\n── {name} (mean of {runs} runs) ──")

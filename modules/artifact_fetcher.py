@@ -60,6 +60,7 @@ class ArtifactFetcher:
             )
 
     def build_query(self, artifact_ids: list[str]) -> str:
+        """The fetch query for one batch of ids (shape in the module docstring)."""
         values = " ".join(f"<{i}>" for i in artifact_ids)
         branches = "\n  UNION\n  ".join(
             f'{{ {pattern} BIND("{name}" AS ?field) }}'

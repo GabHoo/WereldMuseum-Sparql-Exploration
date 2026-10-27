@@ -56,6 +56,7 @@ class ImageCache:
     # ── Public ───────────────────────────────────────────────────────────────
 
     def is_allowed(self, url: str) -> bool:
+        """True if url is http(s) on one of the allowed hosts (IMAGE_HOSTS)."""
         parts = urllib.parse.urlsplit(url)
         return parts.scheme in ("http", "https") and (parts.hostname or "").lower() in self._hosts
 

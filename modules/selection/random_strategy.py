@@ -6,8 +6,8 @@ from modules.base import SelectionHistory, SelectionStrategy
 class RandomStrategy(SelectionStrategy):
     """
     Baseline selection: pick n unseen items at random.
-    Ignores accepted/rejected history — swap this for an active-learning
-    implementation that uses history to re-score the pool.
+    Ignores the curator's feedback; clustering and rerank are the strategies
+    that use it. No embedding needed.
     """
 
     def select(self, pool: list, n: int, history: SelectionHistory) -> list:

@@ -55,6 +55,7 @@ class LocalHFChatModel(ChatModel):
         self._token = ensure_hf_login()
 
     def _pipeline(self):
+        """The text-generation pipeline, loaded on the first chat; access errors become ChatModelError."""
         if self._pipe is None:
             import torch
             from transformers import pipeline

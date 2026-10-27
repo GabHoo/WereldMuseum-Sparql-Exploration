@@ -174,7 +174,10 @@ document.getElementById('tool-text').addEventListener('click', () => {
   canvas.requestRenderAll();
 });
 
-/* ---------- Undo / clear ---------- */
+/* ---------- Undo / clear ----------
+   Undo keeps whole-canvas JSON snapshots, one per change (the last
+   HISTORY_MAX); the newest is also saved for the next visit (persistWall).
+   isRestoring stops the restore itself from being recorded as a change. */
 const HISTORY_MAX = 30;
 let history = [];
 let isRestoring = false;

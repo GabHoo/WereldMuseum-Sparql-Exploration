@@ -57,6 +57,7 @@ REGISTRY = {
 
 
 def _load_class(module_type: str, key: str):
+    """The class REGISTRY[module_type][key] names, imported only now."""
     dotted = REGISTRY[module_type][key]
     mod_path, class_name = dotted.rsplit(".", 1)
     return getattr(importlib.import_module(mod_path), class_name)
@@ -263,6 +264,15 @@ def build_preloader(modules: dict, build_pool):
 
 
 def build_modules() -> dict:
+    """
+    Build every module from .env; called once by app.py at startup.
+
+    Always present: query_generation, knowledge_base, artifact_fetcher,
+    image_cache, exporter, exhibition_builder, logger, selection.
+    Only when configured: pool_cache (PRELOAD_QUERIES), retrieval_evaluator
+    (RETRIEVAL_EVALUATOR), embedding (EMBEDDING), curation_assistant and
+    chat_model_key (CHAT_MODEL).
+    """
     qg_key  = os.getenv("QUERY_GENERATION", "concept_query")
     kb_key  = os.getenv("KNOWLEDGE_BASE", "sparql_endpoint")
     sel_key = os.getenv("SELECTION", "random")

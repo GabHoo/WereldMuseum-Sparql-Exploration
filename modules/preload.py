@@ -33,6 +33,8 @@ _THUMB_FETCHERS = 4
 
 
 class PoolCache:
+    """The fetched artifacts per find query, on disk. get() returns None when not cached."""
+
     def __init__(self, cache_dir: str):
         self._dir = pathlib.Path(cache_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +61,8 @@ class PoolCache:
 
 
 class Preloader:
+    """Runs the steps in the module docstring for each query, once, in a background thread."""
+
     def __init__(self, queries: list[str], modules: dict, pool_cache: PoolCache, build_pool):
         self._queries = queries
         self._modules = modules
@@ -86,6 +90,7 @@ class Preloader:
         self._status["running"] = False
 
     def _preload(self, query: str) -> list:
+        """Warm every cache for one query (steps 1–4 above); returns its pool."""
         sparql = self._modules["query_generation"].convert(query, {})
         artifacts = self._pools.get(sparql)
         if artifacts is None:
