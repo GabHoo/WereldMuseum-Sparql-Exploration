@@ -234,9 +234,12 @@
       gap: 20px;
       align-items: start;
     }
-    #pool-main { min-width: 0; }
+    /* Pinned to its column: while the sidebar is hidden (during a search) the
+       cards would otherwise move into the 220px column and stack vertically. */
+    #pool-main { min-width: 0; grid-column: 2; }
     @media (max-width: 760px) {
       #pool-body { grid-template-columns: minmax(0, 1fr); }
+      #pool-main { grid-column: 1; }
     }
 
     /* ── Feature stats sidebar (type / material / place over the pool) ─── */
